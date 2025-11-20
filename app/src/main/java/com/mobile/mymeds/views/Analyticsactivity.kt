@@ -434,6 +434,7 @@ private fun AnalyticsScreen(
                             0 -> DeliveryPickupTab(state.analytics, showDelivery, showPickup)
                             1 -> BQT2Tab(state.analytics)
                             2 -> RefillsByDayTab(state.analytics)
+                            3 -> OfflineConnectivityTab(state.analytics)
                         }
                     }
                 }
@@ -534,6 +535,27 @@ private fun CompactFiltersBar(
                     modifier = Modifier.padding(vertical = 10.dp)
                 )
             }
+            Tab(
+                selected = analyticsTab == 3,
+                onClick = { onTabChange(3) },
+                modifier = Modifier
+                    .padding(4.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(
+                        if (analyticsTab == 3) Color.White
+                        else Color.Transparent
+                    )
+            ) {
+                Text(
+                    "📶 Conectividad",
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = if (analyticsTab == 3) Color(0xFF6B9BD8)
+                    else Color(0xFF7F8C8D),
+                    modifier = Modifier.padding(vertical = 10.dp)
+                )
+            }
+
         }
 
         Spacer(Modifier.height(10.dp))
@@ -1286,4 +1308,102 @@ fun Color.darken(factor: Float): Color {
         blue = (blue * (1 - factor)).coerceIn(0f, 1f),
         alpha = alpha
     )
+}
+@Composable
+private fun OfflineConnectivityTab(analytics: UserAnalytics) {
+    val scroll = rememberScrollState()
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(scroll)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        SectionTitleChip("BQT – Conectividad offline", "📶")
+
+        // KPIs principales
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            KpiCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.CloudOff,
+                title = "Pedidos offline",
+                value = analytics.offlineOrdersCount.toString(),
+                color = Color(0xFFE67E22)
+            )
+            KpiCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.PieChart,
+                title = "% offline",
+                value = "${analytics.offlineOrdersPercentage.toInt()}%",
+                color = Color(0xFF3498DB)
+            )
+            KpiCard(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Filled.Schedule,
+                title = "Sync prom.",
+                value = formatDelay(analytics.averageOfflineSyncDelayMinutes),
+                color = Color(0xFF16A085)
+            )
+        }
+
+        SectionTitleChip("Interpretación rápida", "🧠")
+        Card(
+            shape = RoundedCornerShape(16.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            elevation = CardDefaults.cardElevation(2.dp)
+        ) {
+            Column(
+                Modifier.padding(14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Text(
+                    "Este bloque responde a la pregunta:",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF7F8C8D)
+                )
+                Text(
+                    "«¿Qué proporción de pedidos se crea offline y cuánto tardan en sincronizarse?»",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Color(0xFF2C3E50)
+                )
+
+                Spacer(Modifier.height(4.dp))
+
+                BulletText("Un % alto de pedidos offline indica alta dependencia del modo sin conexión.")
+                BulletText("Un tiempo promedio de sincronización alto puede sugerir problemas de conectividad o de reintentos.")
+                BulletText("Estos indicadores están directamente ligados al feature de conectividad eventual de pedidos.")
+            }
+        }
+    }
+}
+
+@Composable
+private fun BulletText(text: String) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        Text("•", color = Color(0xFF2C3E50))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodySmall,
+            color = Color(0xFF2C3E50)
+        )
+    }
+}
+
+private fun formatDelay(minutes: Float): String {
+    if (minutes <= 0f) return "—"
+    val totalMin = minutes.toInt()
+    val hours = totalMin / 60
+    val mins = totalMin % 60
+    return when {
+        hours > 0 -> "${hours}h ${mins}min"
+        else -> "${mins} min"
+    }
 }

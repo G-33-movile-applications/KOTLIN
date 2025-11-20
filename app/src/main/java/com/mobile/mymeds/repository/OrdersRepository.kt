@@ -8,6 +8,7 @@ import com.google.firebase.firestore.Query
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.sql.Date
 
 /**
  * ═══════════════════════════════════════════════════════════════════════
@@ -69,7 +70,9 @@ class OrdersRepository {
         deliveryAddress: String = "",
         phoneNumber: String = "",
         notes: String = "",
-        skipStockValidation: Boolean = false      // 👈 IMPORTANTE
+        skipStockValidation: Boolean = false,
+        createdOffline: Boolean = false,
+        offlineCreatedAtMillis: Long? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "═════════════════════════════════════════════════════════")
@@ -104,18 +107,25 @@ class OrdersRepository {
                 phoneNumber = phoneNumber,
                 notes = notes
             )
-            
+            val nowTs = Timestamp.now()
+            val offlineCreatedTs = offlineCreatedAtMillis?.let { millis ->
+                Timestamp(Date(millis))
+            }
+            val delayMs: Long = if (createdOffline && offlineCreatedAtMillis != null) {
+                nowTs.toDate().time - offlineCreatedAtMillis
+            } else 0L
+
             // Guardar en Firebase
             val orderRef = firestore.collection(COLLECTION_USERS)
                 .document(userId)
                 .collection(SUBCOLLECTION_ORDERS)
-                .add(hashMapOf(
-                    "userId" to order.userId,
-                    "pharmacyId" to order.pharmacyId,
-                    "pharmacyName" to order.pharmacyName,
-                    "pharmacyAddress" to order.pharmacyAddress,
-                    "items" to order.items.map { item ->
-                        hashMapOf(
+                .add(
+                    hashMapOf(
+                        "userId" to order.userId,
+                        "pharmacyId" to order.pharmacyId,
+                        "pharmacyName" to order.pharmacyName,
+                        "pharmacyAddress" to order.pharmacyAddress,
+                        "items" to order.items.map { item -> hashMapOf(
                             "medicationId" to item.medicationId,
                             "medicationRef" to item.medicationRef,
                             "medicationName" to item.medicationName,
@@ -125,17 +135,23 @@ class OrdersRepository {
                             "principioActivo" to item.principioActivo,
                             "presentacion" to item.presentacion,
                             "laboratorio" to item.laboratorio
-                        )
-                    },
-                    "totalAmount" to order.totalAmount,
-                    "status" to order.status.name,
-                    "deliveryType" to order.deliveryType.name,
-                    "deliveryAddress" to order.deliveryAddress,
-                    "phoneNumber" to order.phoneNumber,
-                    "notes" to order.notes,
-                    "createdAt" to Timestamp.now(),
-                    "updatedAt" to Timestamp.now()
-                ))
+                        )},
+                        "totalAmount" to order.totalAmount,
+                        "status" to order.status.name,
+                        "deliveryType" to order.deliveryType.name,
+                        "deliveryAddress" to order.deliveryAddress,
+                        "phoneNumber" to order.phoneNumber,
+                        "notes" to order.notes,
+                        "createdAt" to nowTs,
+                        "updatedAt" to nowTs,
+
+                        // 👇 CAMPOS ANALÍTICOS OFFLINE
+                        "createdOffline" to createdOffline,
+                        "offlineCreatedAt" to offlineCreatedTs,
+                        "syncedAt" to nowTs,
+                        "offlineSyncDelayMs" to delayMs
+                    )
+                )
                 .await()
             
             val orderId = orderRef.id
@@ -320,7 +336,7 @@ class OrdersRepository {
     private fun parseOrderDocument(orderId: String, data: Map<String, Any>): MedicationOrder {
         @Suppress("UNCHECKED_CAST")
         val itemsList = (data["items"] as? List<Map<String, Any>>) ?: emptyList()
-        
+
         val items = itemsList.map { itemMap ->
             OrderItem(
                 medicationId = itemMap["medicationId"] as? String ?: "",
@@ -334,7 +350,7 @@ class OrdersRepository {
                 laboratorio = itemMap["laboratorio"] as? String ?: ""
             )
         }
-        
+
         return MedicationOrder(
             id = orderId,
             userId = data["userId"] as? String ?: "",
@@ -349,10 +365,17 @@ class OrdersRepository {
             phoneNumber = data["phoneNumber"] as? String ?: "",
             notes = data["notes"] as? String ?: "",
             createdAt = data["createdAt"] as? Timestamp,
-            updatedAt = data["updatedAt"] as? Timestamp
+            updatedAt = data["updatedAt"] as? Timestamp,
+
+            // 👇 NUEVO: leer campos offline si existen
+            createdOffline = data["createdOffline"] as? Boolean ?: false,
+            offlineCreatedAt = data["offlineCreatedAt"] as? Timestamp,
+            syncedAt = data["syncedAt"] as? Timestamp,
+            offlineSyncDelayMs = (data["offlineSyncDelayMs"] as? Long) ?: 0L
         )
     }
-    
+
+
     /**
      * ═════════════════════════════════════════════════════════════════
      * ACTUALIZAR PEDIDOS - UPDATE ORDERS

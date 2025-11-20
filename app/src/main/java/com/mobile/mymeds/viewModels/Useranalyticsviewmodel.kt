@@ -14,7 +14,7 @@ import kotlinx.coroutines.withContext
 
 /**
  * ═══════════════════════════════════════════════════════════════════════════
- * VIEWMODEL DE ANALÍTICAS - BQT2 IMPLEMENTATION
+ * VIEWMODEL DE ANALÍTICAS - BQT2 + Offline Connectivity
  * ═══════════════════════════════════════════════════════════════════════════
  */
 class UserAnalyticsViewModel : ViewModel() {
@@ -28,6 +28,10 @@ class UserAnalyticsViewModel : ViewModel() {
     private val _isRefreshing = mutableStateOf(false)
     val isRefreshing: State<Boolean> get() = _isRefreshing
 
+    // 🆕 Recordar últimos filtros aplicados (para refresh)
+    private var lastDays: Int? = null
+    private var lastMode: DeliveryMode? = null
+
     /**
      * Cargar analíticas del usuario
      */
@@ -39,13 +43,24 @@ class UserAnalyticsViewModel : ViewModel() {
             return
         }
 
+        // Si vienen null, usamos los últimos; si no, actualizamos memoria
+        val effectiveDays = days ?: lastDays
+        val effectiveMode = mode ?: lastMode
+        lastDays = effectiveDays
+        lastMode = effectiveMode
+
         viewModelScope.launch(Dispatchers.IO) {
             try {
                 withContext(Dispatchers.Main) {
                     _uiState.value = AnalyticsUiState.Loading
                 }
 
-                val analytics = repository.getUserAnalytics(userId)
+                // 🆕 El repo ya debe calcular también las métricas offline
+                val analytics = repository.getUserAnalytics(
+                    userId = userId,
+                    days = effectiveDays,
+                    mode = effectiveMode
+                )
 
                 withContext(Dispatchers.Main) {
                     _uiState.value = AnalyticsUiState.Success(analytics)
@@ -62,7 +77,7 @@ class UserAnalyticsViewModel : ViewModel() {
     }
 
     /**
-     * Refrescar analíticas
+     * Refrescar analíticas con los últimos filtros usados
      */
     fun refresh() {
         val userId = auth.currentUser?.uid ?: return
@@ -73,7 +88,11 @@ class UserAnalyticsViewModel : ViewModel() {
                     _isRefreshing.value = true
                 }
 
-                val analytics = repository.getUserAnalytics(userId)
+                val analytics = repository.getUserAnalytics(
+                    userId = userId,
+                    days = lastDays,
+                    mode = lastMode
+                )
 
                 withContext(Dispatchers.Main) {
                     _uiState.value = AnalyticsUiState.Success(analytics)
