@@ -26,6 +26,8 @@ import com.mobile.mymeds.ui.theme.MyMedsTheme
 import com.mobile.mymeds.viewModels.MainViewModel
 import com.mobile.mymeds.views.components.DrivingModeOverlay
 import com.google.firebase.auth.FirebaseAuth
+import androidx.compose.material.icons.filled.AccessTime
+
 
 class HomeActivity : ComponentActivity() {
     private val mainViewModel: MainViewModel by viewModels()
@@ -71,6 +73,7 @@ class HomeActivity : ComponentActivity() {
                             onOrdersClick = { if (!isDriving) navigateToOrders() },
                             onPrescriptionsClick = { if (!isDriving) navigateToPrescriptions() },
                             onAnalyticsClick = { if (!isDriving) navigateToAnalytics() },
+                            onRemindersClick = { if (!isDriving) navigateToReminders() },
 
                             // Siempre disponibles
                             onNotificationsClick = { showNotifications() },
@@ -116,6 +119,10 @@ class HomeActivity : ComponentActivity() {
         // TODO: Implementar lógica de notificaciones
     }
 
+    private fun navigateToReminders() {
+        startActivity(Intent(this, MedicationRemindersActivity::class.java))
+    }
+
     private fun logout() {
         FirebaseAuth.getInstance().signOut()
         startActivity(Intent(this, LoginActivity::class.java))
@@ -133,7 +140,8 @@ fun HomeScreen(
     onLogoutClick: () -> Unit = {},
     onOrdersClick: () -> Unit = {},
     onPrescriptionsClick: () -> Unit = {},
-    onAnalyticsClick: () -> Unit = {} // NUEVO: icono de analíticas en la barra
+    onAnalyticsClick: () -> Unit = {},// NUEVO: icono de analíticas en la barra
+    onRemindersClick: () -> Unit = {}
 ) {
     // Tabs: "Tus pedidos" / "Tus prescripciones"
     val tabs = listOf("Tus pedidos", "Tus prescripciones")
@@ -156,6 +164,13 @@ fun HomeScreen(
                         Icon(
                             imageVector = Icons.Filled.BarChart,
                             contentDescription = "Analíticas",
+                            tint = Color.White
+                        )
+                    }
+                    IconButton(onClick = onRemindersClick) {
+                        Icon(
+                            imageVector = Icons.Filled.AccessTime,   // o Icons.Filled.Alarm si prefieres
+                            contentDescription = "Recordatorios",
                             tint = Color.White
                         )
                     }
