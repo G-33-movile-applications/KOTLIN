@@ -1,6 +1,7 @@
 package com.mobile.mymeds.views
 
 import android.os.Bundle
+import android.content.Context
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.viewModels
@@ -42,18 +43,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.google.firebase.Timestamp
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.FirebaseFirestore
+import com.mobile.mymeds.data.reminders.RemindersDatabase
+import com.mobile.mymeds.data.reminders.MedicationReminderEntity
+import com.mobile.mymeds.data.reminders.ReminderSettingsManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 // ════════════════════════════════════════════════════════════════════════
-// MODELOS
+// MODELOS (DOMINIO)
 // ════════════════════════════════════════════════════════════════════════
 
 enum class ReminderRecurrence {
@@ -74,54 +77,49 @@ data class MedicationReminder(
     val time: String = "", // HH:mm
     val recurrence: ReminderRecurrence = ReminderRecurrence.ONCE,
     val isActive: Boolean = true,
-    val createdAt: Timestamp? = null
+    val createdAtMillis: Long? = null
 )
 
 // ════════════════════════════════════════════════════════════════════════
-// REPOSITORIO
+// REPOSITORIO LOCAL (Room + Preferences)
 // ════════════════════════════════════════════════════════════════════════
 
 class MedicationReminderRepository(
-    private val db: FirebaseFirestore = FirebaseFirestore.getInstance(),
-    private val auth: FirebaseAuth = FirebaseAuth.getInstance()
+    context: Context
 ) {
 
-    private val REMINDERS_SUBCOLLECTION = "recordatoriosMedicamentos"
+    private val roomDb = RemindersDatabase.getInstance(context)
+    private val dao = roomDb.medicationRemindersDao()
+    private val settingsManager = ReminderSettingsManager(context) // para futuros ajustes globales
 
-    private fun userDoc() =
-        auth.currentUser?.uid?.let { uid ->
-            db.collection("usuarios").document(uid)
-        }
+    // Helpers de mapeo Entity ↔ Domain
+    private fun MedicationReminderEntity.toDomain(): MedicationReminder =
+        MedicationReminder(
+            id = id,
+            medicationName = medicationName,
+            time = time,
+            recurrence = when (recurrence) {
+                ReminderRecurrence.DAILY.name -> ReminderRecurrence.DAILY
+                ReminderRecurrence.WEEKLY.name -> ReminderRecurrence.WEEKLY
+                else -> ReminderRecurrence.ONCE
+            },
+            isActive = isActive,
+            createdAtMillis = createdAtMillis
+        )
+
+    private fun MedicationReminder.toEntity(): MedicationReminderEntity =
+        MedicationReminderEntity(
+            id = if (id.isBlank()) UUID.randomUUID().toString() else id,
+            medicationName = medicationName,
+            time = time,
+            recurrence = recurrence.name,
+            isActive = isActive,
+            createdAtMillis = createdAtMillis ?: System.currentTimeMillis()
+        )
 
     suspend fun getReminders(): List<MedicationReminder> {
-        val userRef = userDoc() ?: return emptyList()
-        return try {
-            val snap = userRef
-                .collection(REMINDERS_SUBCOLLECTION)
-                .get()
-                .await()
-
-            snap.documents.mapNotNull { doc ->
-                try {
-                    MedicationReminder(
-                        id = doc.id,
-                        medicationName = doc.getString("medicationName") ?: "",
-                        time = doc.getString("time") ?: "",
-                        recurrence = when (doc.getString("recurrence") ?: "ONCE") {
-                            "DAILY" -> ReminderRecurrence.DAILY
-                            "WEEKLY" -> ReminderRecurrence.WEEKLY
-                            else -> ReminderRecurrence.ONCE
-                        },
-                        isActive = doc.getBoolean("isActive") ?: true,
-                        createdAt = doc.getTimestamp("createdAt")
-                    )
-                } catch (e: Exception) {
-                    null
-                }
-            }
-        } catch (e: Exception) {
-            emptyList()
-        }
+        val entities = dao.getAllOnce()
+        return entities.map { it.toDomain() }
     }
 
     suspend fun createReminder(
@@ -129,19 +127,15 @@ class MedicationReminderRepository(
         time: String,
         recurrence: ReminderRecurrence
     ): Result<Unit> {
-        val userRef = userDoc() ?: return Result.failure(Exception("Usuario no autenticado"))
         return try {
-            val data = hashMapOf(
-                "medicationName" to medicationName,
-                "time" to time,
-                "recurrence" to recurrence.name,
-                "isActive" to true,
-                "createdAt" to Timestamp.now()
+            val entity = MedicationReminderEntity(
+                medicationName = medicationName,
+                time = time,
+                recurrence = recurrence.name,
+                isActive = true,
+                createdAtMillis = System.currentTimeMillis()
             )
-            userRef
-                .collection(REMINDERS_SUBCOLLECTION)
-                .add(data)
-                .await()
+            dao.upsert(entity)
             Result.success(Unit)
         } catch (e: Exception) {
             Result.failure(e)
@@ -149,19 +143,12 @@ class MedicationReminderRepository(
     }
 
     suspend fun setReminderActive(reminderId: String, active: Boolean) {
-        val userRef = userDoc() ?: return
-        try {
-            userRef
-                .collection(REMINDERS_SUBCOLLECTION)
-                .document(reminderId)
-                .update("isActive", active)
-                .await()
+        dao.setActive(reminderId, active)
+        // Aquí en el futuro: usar settingsManager.globalEnabled y programar / cancelar alarmas.
+    }
 
-            // Aquí luego conectarás el ReminderEngine (WorkManager/AlarmManager)
-
-        } catch (e: Exception) {
-            // loggear si quieres
-        }
+    suspend fun deleteReminder(reminderId: String) {
+        dao.deleteById(reminderId)
     }
 }
 
@@ -176,11 +163,11 @@ sealed class RemindersUiState {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// VIEWMODEL
+// VIEWMODEL + FACTORY
 // ════════════════════════════════════════════════════════════════════════
 
 class MedicationRemindersViewModel(
-    private val repository: MedicationReminderRepository = MedicationReminderRepository()
+    private val repository: MedicationReminderRepository
 ) : ViewModel() {
 
     private val _uiState = mutableStateOf<RemindersUiState>(RemindersUiState.Loading)
@@ -226,7 +213,6 @@ class MedicationRemindersViewModel(
         }
     }
 
-    // 🔹 FALTABA ESTA FUNCIÓN
     fun createReminder(
         medicationName: String,
         time: String,
@@ -250,15 +236,27 @@ class MedicationRemindersViewModel(
     }
 }
 
+class MedicationRemindersViewModelFactory(
+    private val appContext: Context
+) : ViewModelProvider.Factory {
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(MedicationRemindersViewModel::class.java)) {
+            val repo = MedicationReminderRepository(appContext)
+            return MedicationRemindersViewModel(repo) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
+    }
+}
+
 // ════════════════════════════════════════════════════════════════════════
-/**
- * ACTIVITY: Medication Reminder Management Screen
- */
+// ACTIVITY
 // ════════════════════════════════════════════════════════════════════════
 
 class MedicationRemindersActivity : ComponentActivity() {
 
-    private val vm: MedicationRemindersViewModel by viewModels()
+    private val vm: MedicationRemindersViewModel by viewModels {
+        MedicationRemindersViewModelFactory(applicationContext)
+    }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -364,7 +362,9 @@ class MedicationRemindersActivity : ComponentActivity() {
                                         },
                                         onEdit = { _ ->
                                             scope.launch {
-                                                snackbarHostState.showSnackbar("Edición de recordatorios próximamente")
+                                                snackbarHostState.showSnackbar(
+                                                    "Edición de recordatorios próximamente"
+                                                )
                                             }
                                         }
                                     )
@@ -372,7 +372,6 @@ class MedicationRemindersActivity : ComponentActivity() {
                             }
                         }
 
-                        // 🔹 DIÁLOGO DE CREACIÓN
                         if (showCreateDialog) {
                             CreateReminderDialog(
                                 onDismiss = { showCreateDialog = false },
@@ -525,7 +524,7 @@ private fun ReminderCard(
                 }
             }
 
-            reminder.createdAt?.toDate()?.let { created ->
+            reminder.createdAtMillis?.let { millis ->
                 Spacer(Modifier.height(8.dp))
                 Divider(color = Color(0xFFCFD8DC), thickness = 0.5.dp)
                 Spacer(Modifier.height(6.dp))
@@ -534,7 +533,7 @@ private fun ReminderCard(
                     SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.getDefault())
                 }
                 Text(
-                    text = "Creado: ${sdf.format(created)}",
+                    text = "Creado: ${sdf.format(Date(millis))}",
                     fontSize = 11.sp,
                     color = Color(0xFF78909C)
                 )
@@ -607,7 +606,7 @@ private fun CreateReminderDialog(
     onSave: (String, String, ReminderRecurrence) -> Unit
 ) {
     var name by remember { mutableStateOf("") }
-    var time by remember { mutableStateOf("") } // formato simple HH:mm
+    var time by remember { mutableStateOf("") } // formato HH:mm
     var recurrence by remember { mutableStateOf(ReminderRecurrence.ONCE) }
 
     androidx.compose.material3.AlertDialog(
