@@ -8,7 +8,7 @@
             <InsightsFilterSettings>
               <option name="connection">
                 <ConnectionSetting>
-                  <option name="appId" value="com.example.mymeds" />
+                  <option name="appId" value="com.mobile.mymeds" />
                   <option name="mobileSdkAppId" value="1:686810964141:android:160b991829d89700f62624" />
                   <option name="projectId" value="mymeds-application-f99dd" />
                   <option name="projectNumber" value="686810964141" />

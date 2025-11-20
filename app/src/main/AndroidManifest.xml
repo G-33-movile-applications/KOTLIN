@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="com.example.mymeds">
+    package="com.mobile.mymeds">
     <uses-permission android:name="android.permission.INTERNET" />
 
     <!-- Permisos de Internet (necesario para cargar el mapa) -->
@@ -19,8 +19,18 @@
         android:required="false" />
     <uses-feature android:name="android.hardware.nfc" android:required="false" />
 
+    <!-- Permisos para cámara y almacenamiento -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
     <application
-        android:name=".MyMedsApplication"
+        android:name="com.mobile.mymeds.MyMedsApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -37,7 +47,7 @@
 
         <!-- LoginActivity será la primera pantalla -->
         <activity
-            android:name=".views.LoginActivity"
+            android:name="com.mobile.mymeds.views.LoginActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds">
             <intent-filter>
@@ -47,76 +57,85 @@
         </activity>
 
         <activity
-            android:name=".views.DeliveryActivity"
+            android:name="com.mobile.mymeds.views.DeliveryActivity"
             android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- Pantalla de registro -->
         <activity
-            android:name=".views.RegisterActivity"
+            android:name="com.mobile.mymeds.views.RegisterActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
         <!-- PharmacyInventory -->
         <activity
-            android:name=".views.PharmacyInventoryActivity"
+            android:name="com.mobile.mymeds.views.PharmacyInventoryActivity"
             android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- HomeActivity -->
         <activity
-            android:name=".views.HomeActivity"
+            android:name="com.mobile.mymeds.views.HomeActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- MapActivity -->
         <activity
-            android:name=".views.MapActivity"
+            android:name="com.mobile.mymeds.views.MapActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- Pantalla de recuperación de contraseña -->
         <activity
-            android:name=".views.PasswordResetActivity"
+            android:name="com.mobile.mymeds.views.PasswordResetActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- Pantalla de perfil -->
         <activity
-            android:name=".views.ProfileActivity"
+            android:name="com.mobile.mymeds.views.ProfileActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
 
         <!-- Subir prescripción (Home) -->
-        <activity android:name=".views.UploadPrescriptionActivity"
+        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds"/>
 
         <!-- NFC (usa enableReaderMode; sin filters) -->
-        <activity android:name=".views.UploadByNfcActivity"
+        <activity android:name="com.mobile.mymeds.views.UploadByNfcActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds"/>
         <!-- Imagen y PDF -->
-        <activity android:name=".views.UploadPrescriptionPhotoActivity"
+        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionPhotoActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds"/>
-        <activity android:name=".views.UploadPrescriptionPDFActivity"
+        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionPDFActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds"/>
-        <activity android:name=".views.OrdersManagementActivity"
+        <activity android:name="com.mobile.mymeds.views.OrdersManagementActivity"
             android:exported="true"
             android:theme="@style/Theme.MyMeds"/>
 
         <!-- Servicio detección conducción -->
-        <service android:name=".services.DrivingDetector"
+        <service android:name="com.mobile.mymeds.services.DrivingDetector"
             android:enabled="true" />
 
         <receiver
-            android:name=".session.KeepSignedInReceiver"
+            android:name="com.mobile.mymeds.session.KeepSignedInReceiver"
             android:exported="false" />
 
-        <activity android:name=".views.PrescriptionsActivity" />
-        <activity android:name=".views.AnalyticsActivity" />
+        <activity android:name="com.mobile.mymeds.views.PrescriptionsActivity" />
+        <activity android:name="com.mobile.mymeds.views.AnalyticsActivity" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
 
     </application>
