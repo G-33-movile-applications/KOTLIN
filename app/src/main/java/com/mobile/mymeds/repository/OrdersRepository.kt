@@ -68,26 +68,31 @@ class OrdersRepository {
         deliveryType: DeliveryType,
         deliveryAddress: String = "",
         phoneNumber: String = "",
-        notes: String = ""
+        notes: String = "",
+        skipStockValidation: Boolean = false      // 👈 IMPORTANTE
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
             Log.d(TAG, "═════════════════════════════════════════════════════════")
-            Log.d(TAG, "CREANDO PEDIDO")
+            Log.d(TAG, "CREANDO PEDIDO (skipStockValidation=$skipStockValidation)")
             Log.d(TAG, "Usuario: $userId")
             Log.d(TAG, "Farmacia: ${pharmacy.name}")
             Log.d(TAG, "Items: ${cart.items.size}")
             Log.d(TAG, "═════════════════════════════════════════════════════════")
-            
+
             // PASO 1: Validar disponibilidad de stock
-            Log.d(TAG, "PASO 1: Validando disponibilidad de stock...")
-            val stockValidation = validateStock(pharmacy.id, cart.items)
-            if (!stockValidation.isValid) {
-                Log.e(TAG, "❌ Stock insuficiente: ${stockValidation.message}")
-                return@withContext Result.failure(
-                    Exception("Stock insuficiente: ${stockValidation.message}")
-                )
+            if (!skipStockValidation) {
+                Log.d(TAG, "PASO 1: Validando disponibilidad de stock...")
+                val stockValidation = validateStock(pharmacy.id, cart.items)
+                if (!stockValidation.isValid) {
+                    Log.e(TAG, "❌ Stock insuficiente: ${stockValidation.message}")
+                    return@withContext Result.failure(
+                        Exception("Stock insuficiente: ${stockValidation.message}")
+                    )
+                }
+                Log.d(TAG, "✅ Stock validado correctamente")
+            } else {
+                Log.d(TAG, "PASO 1: ⏭️ Saltando validación de stock (offline/sync)")
             }
-            Log.d(TAG, "✅ Stock validado correctamente")
             
             // PASO 2: Crear el pedido
             Log.d(TAG, "PASO 2: Creando documento de pedido...")
