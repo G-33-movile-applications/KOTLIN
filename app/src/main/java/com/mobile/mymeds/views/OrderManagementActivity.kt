@@ -405,7 +405,9 @@ class EnhancedOrdersViewModel(
                     deliveryAddress = orderData.deliveryAddress,
                     phoneNumber = orderData.phoneNumber,
                     notes = "${orderData.notes} [Sincronizado automáticamente]",
-                    skipStockValidation = true            // 👈 CLAVE AQUÍ
+                    skipStockValidation = true,
+                    createdOffline = true,
+                    offlineCreatedAtMillis = orderData.timestamp
                 )
 
                 if (result.isSuccess) {
