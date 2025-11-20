@@ -126,6 +126,8 @@
 
         <activity android:name="com.mobile.mymeds.views.PrescriptionsActivity" />
         <activity android:name="com.mobile.mymeds.views.AnalyticsActivity" />
+        <activity android:name="com.mobile.mymeds.views.MedicationRemindersActivity" />
+
 
         <provider
             android:name="androidx.core.content.FileProvider"
