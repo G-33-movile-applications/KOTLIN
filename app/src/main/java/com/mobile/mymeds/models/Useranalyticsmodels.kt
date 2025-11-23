@@ -38,7 +38,12 @@ data class UserAnalytics(
     val cancelledOrders: Int = 0,
 
     // BQT4 - Time of the month when refills are most requested
-    val refillsByDayOfMonth: List<Pair<Int, Int>> = emptyList()
+    val refillsByDayOfMonth: List<Pair<Int, Int>> = emptyList(),
+
+    // 🆕 Métricas de conectividad BQT2 sprint 4
+    val offlineOrdersCount: Int = 0,
+    val offlineOrdersPercentage: Float = 0f,
+    val averageOfflineSyncDelayMinutes: Float = 0f
 )
 
 /**

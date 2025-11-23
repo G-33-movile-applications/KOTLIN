@@ -12,6 +12,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.Bundle
+import android.util.ArrayMap
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -66,6 +67,10 @@ import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.math.sqrt
+import com.google.firebase.firestore.Source
+import androidx.compose.material.icons.filled.CloudUpload
+
+
 
 private const val TAG = "OrdersManagementActivity"
 private const val PENDING_ORDERS_KEY = "pending_orders_local"
@@ -82,6 +87,10 @@ private const val PENDING_ORDERS_KEY = "pending_orders_local"
  *
  * NUEVO: Si no hay internet, los pedidos se guardan localmente en SharedPreferences
  * y se sincronizan automáticamente cuando se recupera la conexión.
+ *
+ * NUEVO 2: Se usa ArrayMap como cache in-memory para prescripciones, farmacias
+ * e inventario por farmacia, permitiendo uso offline eventual (sin pegarle
+ * otra vez a Firestore/repositorios).
  */
 
 // Paleta de colores
@@ -103,7 +112,7 @@ data class PrescriptionMedicationItem(
     val laboratorio: String = "",
     val precioUnidad: Int = 0,
     val stock: Int? = null,
-    val inventoryId: String? = null // 👈 NUEVO
+    val inventoryId: String? = null // 👈 ID real de inventario
 )
 
 // Agrupador prescripción + medicamentos
@@ -114,6 +123,7 @@ data class PrescriptionWithMedications(
 
 /**
  * 🆕 Modelo para pedidos pendientes guardados localmente
+ * Guardamos también la farmacia completa para usarla al sincronizar.
  */
 data class PendingOrderData(
     val cart: ShoppingCart,
@@ -125,8 +135,10 @@ data class PendingOrderData(
     val deliveryAddress: String,
     val phoneNumber: String,
     val notes: String,
+    val pharmacy: PhysicalPoint? = null,       // 🆕 snapshot de la farmacia real (puede ser null para pedidos viejos)
     val timestamp: Long = System.currentTimeMillis()
 )
+
 
 class OrdersManagementActivity : ComponentActivity() {
     private val vm: EnhancedOrdersViewModel by viewModels {
@@ -191,27 +203,46 @@ class EnhancedOrdersViewModel(
     private val auth = FirebaseAuth.getInstance()
 
     // 🆕 Gestor de conectividad
-    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private val connectivityManager =
+        context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private val gson = Gson()
     private val sharedPrefs = context.getSharedPreferences("orders_prefs", Context.MODE_PRIVATE)
+
+    // 🆕 Cache in-memory con ArrayMap
+    //  - Key: prescriptionId -> PrescriptionWithMedications
+    //  - Key: pharmacyId -> PharmacyWithDistance
+    //  - Key: pharmacyId -> List<InventoryMedication>
+    private val prescriptionsCache =
+        ArrayMap<String, PrescriptionWithMedications>()
+    private val pharmaciesCache =
+        ArrayMap<String, PharmacyWithDistance>()
+    private val inventoryCache =
+        ArrayMap<String, List<InventoryMedication>>()
 
     private val _uiState = MutableStateFlow<OrderUiState>(OrderUiState.Loading)
     val uiState: StateFlow<OrderUiState> = _uiState.asStateFlow()
 
     private val _nearbyPharmacies = MutableStateFlow<List<PharmacyWithDistance>>(emptyList())
-    val nearbyPharmacies: StateFlow<List<PharmacyWithDistance>> = _nearbyPharmacies.asStateFlow()
+    val nearbyPharmacies: StateFlow<List<PharmacyWithDistance>> =
+        _nearbyPharmacies.asStateFlow()
 
     private val _selectedPharmacy = MutableStateFlow<PhysicalPoint?>(null)
     val selectedPharmacy: StateFlow<PhysicalPoint?> = _selectedPharmacy.asStateFlow()
 
-    private val _userPrescriptions = MutableStateFlow<List<PrescriptionWithMedications>>(emptyList())
-    val userPrescriptions: StateFlow<List<PrescriptionWithMedications>> = _userPrescriptions.asStateFlow()
+    private val _userPrescriptions =
+        MutableStateFlow<List<PrescriptionWithMedications>>(emptyList())
+    val userPrescriptions: StateFlow<List<PrescriptionWithMedications>> =
+        _userPrescriptions.asStateFlow()
 
-    private val _selectedPrescription = MutableStateFlow<PrescriptionWithMedications?>(null)
-    val selectedPrescription: StateFlow<PrescriptionWithMedications?> = _selectedPrescription.asStateFlow()
+    private val _selectedPrescription =
+        MutableStateFlow<PrescriptionWithMedications?>(null)
+    val selectedPrescription: StateFlow<PrescriptionWithMedications?> =
+        _selectedPrescription.asStateFlow()
 
-    private val _prescriptionMedications = MutableStateFlow<List<PrescriptionMedicationItem>>(emptyList())
-    val prescriptionMedications: StateFlow<List<PrescriptionMedicationItem>> = _prescriptionMedications.asStateFlow()
+    private val _prescriptionMedications =
+        MutableStateFlow<List<PrescriptionMedicationItem>>(emptyList())
+    val prescriptionMedications: StateFlow<List<PrescriptionMedicationItem>> =
+        _prescriptionMedications.asStateFlow()
 
     private val _cart = MutableStateFlow(ShoppingCart())
     val cart: StateFlow<ShoppingCart> = _cart.asStateFlow()
@@ -243,6 +274,7 @@ class EnhancedOrdersViewModel(
         initConnectivityMonitoring()
         checkInitialConnectivity()
 
+        // Cargar datos (usarán cache ArrayMap si aplica)
         loadNearbyPharmacies()
         loadUserPrescriptions()
         loadUserOrders()
@@ -263,14 +295,14 @@ class EnhancedOrdersViewModel(
             override fun onAvailable(network: Network) {
                 Log.d(TAG, "🌐 Red disponible")
                 _isConnected.value = true
+
                 // 🆕 Intentar sincronizar pedidos pendientes cuando se recupera la conexión
-                syncPendingOrders()
+                viewModelScope.launch {
+                    val (synced, remaining) = syncPendingOrders()
+                    Log.d(TAG, "🌐 onAvailable: sincronizados=$synced, pendientes=$remaining")
+                }
             }
 
-            override fun onLost(network: Network) {
-                Log.d(TAG, "📡 Red perdida")
-                _isConnected.value = false
-            }
         }
 
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback)
@@ -335,63 +367,77 @@ class EnhancedOrdersViewModel(
     }
 
     /**
-     * 🆕 Sincroniza los pedidos pendientes cuando hay conexión
+     * 🆕 Sincroniza los pedidos pendientes cuando hay conexión.
+     * Devuelve Pair<sincronizados, restantes>.
      */
-    private fun syncPendingOrders() {
-        viewModelScope.launch {
-            val pendingOrders = loadPendingOrders()
-            if (pendingOrders.isEmpty()) {
-                Log.d(TAG, "✅ No hay pedidos pendientes para sincronizar")
-                return@launch
-            }
+    /**
+     * 🆕 Sincroniza los pedidos pendientes cuando hay conexión.
+     * Devuelve Pair<sincronizados, restantes>.
+     */
+    private suspend fun syncPendingOrders(): Pair<Int, Int> {
+        val pendingOrders = loadPendingOrders()
+        if (pendingOrders.isEmpty()) {
+            Log.d(TAG, "✅ No hay pedidos pendientes para sincronizar")
+            return 0 to 0
+        }
 
-            Log.d(TAG, "🔄 Sincronizando ${pendingOrders.size} pedidos pendientes...")
+        Log.d(TAG, "🔄 Sincronizando ${pendingOrders.size} pedidos pendientes...")
 
-            val successfulOrders = mutableListOf<PendingOrderData>()
+        var successCount = 0
+        val successfulOrders = mutableListOf<PendingOrderData>()
 
-            pendingOrders.forEach { orderData ->
-                try {
-                    // Intentar crear el pedido en el servidor
-                    val pharmacy = PhysicalPoint(
-                        id = orderData.pharmacyId,
-                        name = orderData.pharmacyName,
-                        address = orderData.pharmacyAddress,
-                        location = com.google.firebase.firestore.GeoPoint(0.0, 0.0),
-                        phone = "",
-                        openingHours = ""
+        pendingOrders.forEach { orderData ->
+            try {
+                val pharmacyToUse: PhysicalPoint = orderData.pharmacy ?: PhysicalPoint(
+                    id = orderData.pharmacyId,
+                    name = orderData.pharmacyName,
+                    address = orderData.pharmacyAddress,
+                    location = com.google.firebase.firestore.GeoPoint(0.0, 0.0),
+                    phone = "",
+                    openingHours = ""
+                )
+
+                val result = ordersRepository.createOrder(
+                    cart = orderData.cart,
+                    userId = orderData.userId,
+                    pharmacy = pharmacyToUse,
+                    deliveryType = orderData.deliveryType,
+                    deliveryAddress = orderData.deliveryAddress,
+                    phoneNumber = orderData.phoneNumber,
+                    notes = "${orderData.notes} [Sincronizado automáticamente]",
+                    skipStockValidation = true,
+                    createdOffline = true,
+                    offlineCreatedAtMillis = orderData.timestamp
+                )
+
+                if (result.isSuccess) {
+                    successfulOrders.add(orderData)
+                    successCount++
+                    Log.d(TAG, "✅ Pedido sincronizado exitosamente")
+                } else {
+                    Log.e(
+                        TAG,
+                        "❌ Error al crear pedido pendiente: ${result.exceptionOrNull()?.message}"
                     )
-
-                    val result = ordersRepository.createOrder(
-                        cart = orderData.cart,
-                        userId = orderData.userId,
-                        pharmacy = pharmacy,
-                        deliveryType = orderData.deliveryType,
-                        deliveryAddress = orderData.deliveryAddress,
-                        phoneNumber = orderData.phoneNumber,
-                        notes = "${orderData.notes} [Sincronizado automáticamente]"
-                    )
-
-                    if (result.isSuccess) {
-                        successfulOrders.add(orderData)
-                        Log.d(TAG, "✅ Pedido sincronizado exitosamente")
-                    }
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Error sincronizando pedido: ${e.message}")
                 }
-            }
-
-            // Eliminar los pedidos que se sincronizaron exitosamente
-            if (successfulOrders.isNotEmpty()) {
-                val remainingOrders = pendingOrders.filterNot { it in successfulOrders }
-                val json = gson.toJson(remainingOrders)
-                sharedPrefs.edit().putString(PENDING_ORDERS_KEY, json).apply()
-
-                updatePendingOrdersCount()
-                loadUserOrders()
-
-                Log.d(TAG, "✅ ${successfulOrders.size} pedidos sincronizados. Pendientes: ${remainingOrders.size}")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Excepción sincronizando pedido: ${e.message}")
             }
         }
+
+        val remainingOrders = pendingOrders.filterNot { it in successfulOrders }
+        val json = gson.toJson(remainingOrders)
+        sharedPrefs.edit().putString(PENDING_ORDERS_KEY, json).apply()
+
+        updatePendingOrdersCount()
+        loadUserOrders()
+
+        Log.d(
+            TAG,
+            "✅ Sincronización completada. Exitosos: $successCount, Pendientes: ${remainingOrders.size}"
+        )
+
+        return successCount to remainingOrders.size
     }
 
     /**
@@ -403,10 +449,75 @@ class EnhancedOrdersViewModel(
         Log.d(TAG, "🗑️ Pedidos pendientes eliminados")
     }
 
-    fun loadNearbyPharmacies() {
+    /**
+     * 🆕 Forzar sincronización de pedidos pendientes desde la UI (botón)
+     */
+    fun syncPendingOrdersNow(onMessage: (String) -> Unit) {
+        viewModelScope.launch {
+            // Marcamos loading para que la UI pueda reaccionar si quieres
+            isLoading = true
+
+            if (!isNetworkAvailable()) {
+                isLoading = false
+                onMessage("📡 Sin conexión. No se pueden sincronizar pedidos pendientes.")
+                return@launch
+            }
+
+            onMessage("🔄 Intentando sincronizar pedidos pendientes...")
+
+            val (synced, remaining) = syncPendingOrders()
+
+            isLoading = false
+
+            when {
+                synced > 0 && remaining == 0 ->
+                    onMessage("✅ $synced pedido(s) sincronizado(s). No quedan pendientes.")
+                synced > 0 && remaining > 0 ->
+                    onMessage("✅ $synced pedido(s) sincronizado(s). Pendientes aún: $remaining.")
+                synced == 0 && remaining > 0 ->
+                    onMessage("⚠️ No se pudo sincronizar ningún pedido. Pendientes: $remaining.")
+                else ->
+                    onMessage("ℹ️ No había pedidos pendientes para sincronizar.")
+            }
+        }
+    }
+
+
+    /**
+     * 🆕 Carga farmacias cercanas usando cache ArrayMap si aplica.
+     * Si ya se cargaron antes y no se pide forceRefresh, se usa la cache.
+     * Si no hay red y no hay cache -> Error.
+     */
+    fun loadNearbyPharmacies(forceRefresh: Boolean = false) {
         viewModelScope.launch {
             try {
                 _uiState.value = OrderUiState.Loading
+
+                // 1) Si no queremos refrescar y ya hay datos cacheados -> usar cache
+                if (!forceRefresh) {
+                    val hasCache = pharmaciesCache.isNotEmpty()
+                    val hasNetwork = isNetworkAvailable()
+
+                    if (hasCache && (!hasNetwork || hasNetwork)) {
+                        val cachedList =
+                            (0 until pharmaciesCache.size).map { idx ->
+                                pharmaciesCache.valueAt(idx)
+                            }.sortedBy { it.distanceKm }
+                        _nearbyPharmacies.value = cachedList
+                        _uiState.value = OrderUiState.Success
+                        Log.d(
+                            TAG,
+                            "📦 Farmacias cargadas desde ArrayMap cache (${cachedList.size})"
+                        )
+                        return@launch
+                    } else if (!hasNetwork && !hasCache) {
+                        _uiState.value =
+                            OrderUiState.Error("Sin conexión a internet y sin datos cacheados de farmacias")
+                        return@launch
+                    }
+                }
+
+                // 2) Llegamos aquí si queremos refrescar o no hay cache válida
                 val result = pharmacyRepository.getAllPharmacies()
                 if (result.isSuccess) {
                     val pharmacies = result.getOrNull().orEmpty()
@@ -420,10 +531,19 @@ class EnhancedOrdersViewModel(
                             PharmacyWithDistance(p, d)
                         }.sortedBy { it.distanceKm }
                     } else pharmacies.map { PharmacyWithDistance(it, null) }
+
+                    // Actualizar cache ArrayMap
+                    pharmaciesCache.clear()
+                    list.forEach { entry ->
+                        pharmaciesCache[entry.pharmacy.id] = entry
+                    }
+
                     _nearbyPharmacies.value = list
                     _uiState.value = OrderUiState.Success
+                    Log.d(TAG, "✅ Farmacias cargadas desde red: ${list.size}")
                 } else {
-                    _uiState.value = OrderUiState.Error(result.exceptionOrNull()?.message ?: "Error desconocido")
+                    _uiState.value =
+                        OrderUiState.Error(result.exceptionOrNull()?.message ?: "Error desconocido")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ loadNearbyPharmacies", e)
@@ -432,43 +552,82 @@ class EnhancedOrdersViewModel(
         }
     }
 
+    /**
+     * 🆕 Carga prescripciones del usuario usando cache ArrayMap + Firestore CACHE,
+     * similar a PrescriptionsActivity.
+     */
     @RequiresApi(Build.VERSION_CODES.O)
-    fun loadUserPrescriptions() {
+    fun loadUserPrescriptions(forceRefresh: Boolean = false) {
         val userId = auth.currentUser?.uid ?: run {
             Log.e(TAG, "❌ Usuario no autenticado")
             return
         }
+
         viewModelScope.launch {
             try {
                 _uiState.value = OrderUiState.Loading
-                val docs = firestore.collection("usuarios")
+
+                val hasCache = prescriptionsCache.isNotEmpty()
+                val hasNetwork = isNetworkAvailable()
+
+                // 1) Si ya hay cache y no estoy forzando, usar cache (online u offline)
+                if (!forceRefresh && hasCache) {
+                    val cachedList =
+                        (0 until prescriptionsCache.size).map { idx ->
+                            prescriptionsCache.valueAt(idx)
+                        }
+                    _userPrescriptions.value = cachedList
+                    _uiState.value = OrderUiState.Success
+                    Log.d(TAG, "📦 Prescripciones desde ArrayMap cache (${cachedList.size})")
+                    return@launch
+                }
+
+                // 2) Elegir SOURCE según conectividad (DEFAULT = red+cache, CACHE = solo local)
+                val source = if (hasNetwork) Source.DEFAULT else Source.CACHE
+
+                val snap = firestore.collection("usuarios")
                     .document(userId)
                     .collection("prescripcionesUsuario")
-                    .whereEqualTo("activa", true)
-                    .get()
+                    .get(source)
                     .await()
 
-                val result = docs.documents.mapNotNull { doc ->
+                val result = snap.documents.mapNotNull { doc ->
                     try {
+                        // === MISMO PATRÓN QUE EN PrescriptionsActivity ===
+                        val activaValue = doc.getBoolean("activa")
+                        if (activaValue == null) {
+                            // backfill: si no existe "activa", lo seteamos a true
+                            doc.reference.update("activa", true)
+                        }
+                        val activaFinal = activaValue ?: true
+
+                        // Solo usaremos prescripciones activas para crear pedidos
+                        if (!activaFinal) return@mapNotNull null
+
                         val p = Prescription(
                             id = doc.id,
-                            activa = doc.getBoolean("activa") ?: false,
+                            activa = activaFinal,
                             diagnostico = doc.getString("diagnostico") ?: "",
-                            fechaCreacion = doc.getTimestamp("fechaCreacion"),
+                            fechaCreacion = doc.getTimestamp("fechaCreacion")
+                                ?: doc.getTimestamp("uploadedAt")
+                                ?: doc.getTimestamp("fechaSubida"),
                             medico = doc.getString("medico") ?: ""
                         )
 
+                        // Cargar medicamentos de subcolección con el mismo SOURCE
                         val medsSnap = doc.reference
                             .collection("medicamentosPrescripcion")
-                            .get()
+                            .get(source)
                             .await()
 
                         val meds = medsSnap.documents.mapNotNull { m ->
                             try {
                                 val medicationRef = m.getString("medicationRef") ?: ""
-                                val details = if (medicationRef.isNotEmpty()) {
-                                    getMedicationDetails(medicationRef)
-                                } else null
+                                val details: Map<String, Any>? =
+                                    if (hasNetwork && medicationRef.isNotEmpty()) {
+                                        // Solo buscamos en medicamentosGlobales si hay red
+                                        getMedicationDetails(medicationRef)
+                                    } else null
 
                                 PrescriptionMedicationItem(
                                     id = m.id,
@@ -478,10 +637,12 @@ class EnhancedOrdersViewModel(
                                     doseMg = m.getLong("doseMg")?.toInt() ?: 0,
                                     frequencyHours = m.getLong("frequencyHours")?.toInt() ?: 24,
                                     quantity = m.getLong("quantity")?.toInt() ?: 1,
-                                    principioActivo = details?.get("principioActivo") as? String ?: "",
+                                    principioActivo = details?.get("principioActivo") as? String
+                                        ?: "",
                                     presentacion = details?.get("presentacion") as? String ?: "",
                                     laboratorio = details?.get("laboratorio") as? String ?: "",
-                                    precioUnidad = (details?.get("precioUnidad") as? Long)?.toInt() ?: 0,
+                                    precioUnidad =
+                                        (details?.get("precioUnidad") as? Long)?.toInt() ?: 0,
                                     stock = (details?.get("stock") as? Long)?.toInt()
                                 )
                             } catch (e: Exception) {
@@ -497,9 +658,15 @@ class EnhancedOrdersViewModel(
                     }
                 }
 
+                // 3) Actualizar cache in-memory
+                prescriptionsCache.clear()
+                result.forEach { entry ->
+                    prescriptionsCache[entry.prescription.id] = entry
+                }
+
                 _userPrescriptions.value = result
                 _uiState.value = OrderUiState.Success
-                Log.d(TAG, "✅ Prescripciones cargadas: ${result.size}")
+                Log.d(TAG, "✅ Prescripciones cargadas (source=$source): ${result.size}")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ loadUserPrescriptions", e)
                 _uiState.value = OrderUiState.Error(e.message ?: "Error desconocido")
@@ -526,7 +693,7 @@ class EnhancedOrdersViewModel(
     fun updateUserLocation(location: Location) {
         viewModelScope.launch {
             _userLocation.value = location
-            loadNearbyPharmacies()
+            loadNearbyPharmacies(forceRefresh = true)
             detectAddress(location)
         }
     }
@@ -577,7 +744,7 @@ class EnhancedOrdersViewModel(
             .trim()
 
         val byRefId = inventory.associateBy { toId(it.medicamentoRef) }
-        val byName  = inventory.associateBy { normName(it.nombre) }
+        val byName = inventory.associateBy { normName(it.nombre) }
 
         return meds.map { pm ->
             val pmRefId = toId(pm.medicationRef)
@@ -586,32 +753,70 @@ class EnhancedOrdersViewModel(
 
             if (inv != null) {
                 pm.copy(
-                    inventoryId     = inv.id,                 // 👈 guarda ID real de inventario
-                    precioUnidad    = if (pm.precioUnidad > 0) pm.precioUnidad else inv.precioUnidad,
-                    stock           = inv.stock,
+                    inventoryId = inv.id,                 // 👈 guarda ID real de inventario
+                    precioUnidad = if (pm.precioUnidad > 0) pm.precioUnidad else inv.precioUnidad,
+                    stock = inv.stock,
                     principioActivo = pm.principioActivo.ifEmpty { inv.principioActivo },
-                    presentacion    = pm.presentacion.ifEmpty { inv.presentacion },
-                    laboratorio     = pm.laboratorio.ifEmpty { inv.laboratorio ?: "" }
+                    presentacion = pm.presentacion.ifEmpty { inv.presentacion },
+                    laboratorio = pm.laboratorio.ifEmpty { inv.laboratorio ?: "" }
                 )
             } else pm
         }
     }
 
-    /** Selecciona prescripción y farmacia, y fusiona con inventario */
-    fun selectPrescription(prescriptionWithMeds: PrescriptionWithMedications, pharmacy: PhysicalPoint) {
+    /** Selecciona prescripción y farmacia, y fusiona con inventario (usa cache ArrayMap para inventario) */
+    fun selectPrescription(
+        prescriptionWithMeds: PrescriptionWithMedications,
+        pharmacy: PhysicalPoint
+    ) {
         viewModelScope.launch {
             try {
                 _selectedPrescription.value = prescriptionWithMeds
                 _selectedPharmacy.value = pharmacy
                 _uiState.value = OrderUiState.Loading
 
-                val invResult = pharmacyRepository.getPharmacyInventoryWithDetails(pharmacy.id)
-                val inventory = if (invResult.isSuccess) invResult.getOrNull().orEmpty() else emptyList()
+                val hasNetwork = isNetworkAvailable()
+                val cachedInventory = inventoryCache[pharmacy.id]
 
-                val merged = mergePrescriptionWithInventory(prescriptionWithMeds.medications, inventory)
+                val inventory: List<InventoryMedication> = when {
+                    // Si ya tenemos inventario cacheado, úsalo (offline u online)
+                    cachedInventory != null -> {
+                        Log.d(
+                            TAG,
+                            "📦 Inventario de farmacia ${pharmacy.id} cargado desde ArrayMap cache (${cachedInventory.size})"
+                        )
+                        cachedInventory
+                    }
+
+                    // Si no hay red y no hay cache -> inventario vacío
+                    !hasNetwork -> {
+                        Log.w(
+                            TAG,
+                            "⚠️ Sin conexión y sin inventario cacheado para farmacia ${pharmacy.id}"
+                        )
+                        emptyList()
+                    }
+
+                    // Si hay red y no hay cache -> llamar repo y cachear
+                    else -> {
+                        val invResult =
+                            pharmacyRepository.getPharmacyInventoryWithDetails(pharmacy.id)
+                        val list =
+                            if (invResult.isSuccess) invResult.getOrNull().orEmpty() else emptyList()
+                        if (list.isNotEmpty()) {
+                            inventoryCache[pharmacy.id] = list
+                        }
+                        Log.d(TAG, "✅ Inventario cargado desde red (${list.size} items)")
+                        list
+                    }
+                }
+
+                val merged =
+                    mergePrescriptionWithInventory(prescriptionWithMeds.medications, inventory)
                 _prescriptionMedications.value = merged
 
-                _cart.value = ShoppingCart(pharmacyId = pharmacy.id, pharmacyName = pharmacy.name)
+                _cart.value =
+                    ShoppingCart(pharmacyId = pharmacy.id, pharmacyName = pharmacy.name)
                 _uiState.value = OrderUiState.Success
                 Log.d(TAG, "✅ Merge hecho con inventario (${merged.size} items)")
             } catch (e: Exception) {
@@ -629,52 +834,69 @@ class EnhancedOrdersViewModel(
     }
 
     /** Carrito con tope por stock */
+    /** Carrito con tope por stock, pero permitiendo pedidos aunque no haya inventario vinculado */
     fun addToCart(medication: PrescriptionMedicationItem, quantity: Int = 1) {
         val currentCart = _cart.value
+
+        // Aseguramos que el carrito está ligado a la misma farmacia
         if (currentCart.pharmacyId != _selectedPharmacy.value?.id) {
             Log.w(TAG, "⚠️ Farmacia no coincide con carrito actual")
             return
         }
 
-        // ⚠️ ESTA ES LA CLAVE: ID de inventario real
-        val inventoryId = medication.inventoryId ?: run {
-            Log.e(TAG, "❌ Este medicamento no tiene inventoryId; no se puede validar stock de inventario")
-            Toast.makeText(context, "No se puede agregar: falta vincular al inventario", Toast.LENGTH_SHORT).show()
-            return
+        // 🆕 1) ID efectivo que usaremos en el carrito:
+        //    - Si hay inventoryId (match con inventario de la farmacia), úsalo.
+        //    - Si no, usamos el id del medicamento de la prescripción como fallback.
+        val effectiveId = medication.inventoryId ?: medication.id
+
+        // 🆕 2) Stock máximo:
+        //    - Si tenemos stock de inventario y es >= 0, lo usamos.
+        //    - Si el stock de inventario es 0 o negativo, bloqueamos.
+        //    - Si NO tenemos info de stock, dejamos un tope grande (modo “pedido sin validar stock”).
+        val stockFromInventory = medication.stock
+        val maxStock: Int = when {
+            stockFromInventory != null && stockFromInventory <= 0 -> {
+                Toast.makeText(context, "Sin stock disponible", Toast.LENGTH_SHORT).show()
+                return
+            }
+            stockFromInventory != null && stockFromInventory > 0 -> stockFromInventory
+            // 🆕 fallback: usamos la cantidad de la prescripción o un tope alto
+            medication.quantity > 0 -> medication.quantity
+            else -> 999 // tope arbitrario para no dejar cantidades absurdas
         }
 
-        val stock = medication.stock ?: 0
-        if (stock <= 0) {
-            Toast.makeText(context, "Sin stock disponible", Toast.LENGTH_SHORT).show()
-            return
-        }
+        val q = quantity.coerceIn(1, maxStock)
 
-        val q = quantity.coerceIn(1, stock)
-        val existing = currentCart.items.find { it.medicationId == inventoryId }
+        // 3) Buscar si ya estaba en el carrito
+        val existing = currentCart.items.find { it.medicationId == effectiveId }
 
         if (existing != null) {
-            val newQ = (existing.quantity + q).coerceAtMost(stock)
-            currentCart.updateQuantity(inventoryId, newQ)
+            val newQ = (existing.quantity + q).coerceAtMost(maxStock)
+            currentCart.updateQuantity(effectiveId, newQ)
         } else {
             currentCart.items.add(
                 CartItem(
-                    medicationId   = inventoryId,                 // 👈 usa el ID de inventario
-                    medicationRef  = medication.medicationRef,
+                    medicationId = effectiveId,                 // 👈 puede ser inventarioId o id de prescripción
+                    medicationRef = medication.medicationRef,
                     medicationName = medication.name,
-                    quantity       = q,
-                    pricePerUnit   = medication.precioUnidad,
-                    stock          = stock,
-                    batch          = "",
-                    principioActivo= medication.principioActivo,
-                    presentacion   = medication.presentacion,
-                    laboratorio    = medication.laboratorio
+                    quantity = q,
+                    pricePerUnit = medication.precioUnidad,
+                    stock = maxStock,
+                    batch = "",
+                    principioActivo = medication.principioActivo,
+                    presentacion = medication.presentacion,
+                    laboratorio = medication.laboratorio
                 )
             )
         }
 
         _cart.value = currentCart.copy()
-        Log.d(TAG, "🛒 ${medication.name} x$q (stock=$stock) [invId=$inventoryId]")
+        Log.d(
+            TAG,
+            "🛒 ${medication.name} x$q (maxStock=$maxStock) [invId=${medication.inventoryId}, effectiveId=$effectiveId]"
+        )
     }
+
 
     fun updateCartItemQuantity(medicationId: String, newQuantity: Int) {
         val current = _cart.value
@@ -729,7 +951,6 @@ class EnhancedOrdersViewModel(
         if (!isNetworkAvailable()) {
             Log.w(TAG, "⚠️ Sin conexión a internet. Guardando pedido localmente...")
 
-            // Guardar el pedido localmente
             val pendingOrder = PendingOrderData(
                 cart = currentCart,
                 userId = userId,
@@ -739,16 +960,19 @@ class EnhancedOrdersViewModel(
                 deliveryType = deliveryType,
                 deliveryAddress = deliveryAddress,
                 phoneNumber = phoneNumber,
-                notes = notes
+                notes = notes,
+                pharmacy = pharmacy                      // 🆕 guardamos la farmacia completa
             )
 
             savePendingOrderLocally(pendingOrder)
             clearCart()
 
-            // Notificar al usuario
-            onError("📡 Sin conexión a internet.\n\n✅ Tu pedido se ha guardado localmente y se enviará automáticamente cuando recuperes la conexión.\n\n💾 Pedidos pendientes de sincronización: ${_pendingOrdersCount.value}")
+            onError(
+                "📡 Sin conexión a internet.\n\n✅ Tu pedido se ha guardado localmente y se enviará automáticamente cuando recuperes la conexión.\n\n💾 Pedidos pendientes de sincronización: ${_pendingOrdersCount.value}"
+            )
             return
         }
+
 
         // Si hay conexión, proceder normalmente
         viewModelScope.launch {
@@ -822,6 +1046,7 @@ class EnhancedOrdersViewModel(
     }
 }
 
+
 class EnhancedOrdersViewModelFactory(
     private val context: Context
 ) : androidx.lifecycle.ViewModelProvider.Factory {
@@ -833,7 +1058,6 @@ class EnhancedOrdersViewModelFactory(
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
-
 // ═══════════════════════════════════════════════════════════════════════════
 // UI
 // ═══════════════════════════════════════════════════════════════════════════
@@ -929,16 +1153,64 @@ fun EnhancedOrdersManagementScreen(
                     }) { Icon(Icons.Filled.ArrowBack, "Volver") }
                 },
                 actions = {
+                    // 🔁 Botón de recarga general (farmacias, prescripciones, pedidos)
+                    IconButton(
+                        onClick = {
+                            vm.loadNearbyPharmacies(forceRefresh = true)
+                            vm.loadUserPrescriptions(forceRefresh = true)
+                            vm.loadUserOrders()
+                        }
+                    ) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Refrescar")
+                    }
+
+                    // ☁️🆕 Botón para subir pedidos pendientes
+                    IconButton(
+                        onClick = {
+                            vm.syncPendingOrdersNow { msg ->
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    ) {
+                        if (pendingOrdersCount > 0) {
+                            BadgedBox(badge = { Badge { Text("$pendingOrdersCount") } }) {
+                                Icon(
+                                    Icons.Filled.CloudUpload,
+                                    contentDescription = "Subir pedidos pendientes"
+                                )
+                            }
+                        } else {
+                            Icon(
+                                Icons.Filled.CloudUpload,
+                                contentDescription = "Subir pedidos pendientes"
+                            )
+                        }
+                    }
+
+
+                    // Carrito (lo que ya tenías)
                     if (cart.getTotalItems() > 0) {
                         BadgedBox(badge = {
                             Badge(containerColor = Color(0xFFFF5252)) {
-                                Text("${cart.getTotalItems()}", style = MaterialTheme.typography.labelSmall)
+                                Text(
+                                    "${cart.getTotalItems()}",
+                                    style = MaterialTheme.typography.labelSmall
+                                )
                             }
                         }) {
                             IconButton(onClick = {
-                                if (selectedPharmacy != null) showCartSheet = true
-                                else Toast.makeText(context, "Selecciona una farmacia primero", Toast.LENGTH_SHORT).show()
-                            }) { Icon(Icons.Filled.ShoppingCart, "Ver carrito") }
+                                if (selectedPharmacy != null) {
+                                    showCartSheet = true
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        "Selecciona una farmacia primero",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                }
+                            }) {
+                                Icon(Icons.Filled.ShoppingCart, "Ver carrito")
+                            }
                         }
                     }
                 },
@@ -1106,6 +1378,8 @@ fun getCurrentLocation(
         Log.e(TAG, "❌ getCurrentLocation", e)
     }
 }
+
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 // Pestaña: Prescripciones (con selector de farmacia)

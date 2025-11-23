@@ -4,6 +4,7 @@ import android.util.Log
 import com.mobile.mymeds.models.ClaimTimingResult
 import com.mobile.mymeds.models.DeliveryMode
 import com.mobile.mymeds.models.DeliveryType
+import com.mobile.mymeds.models.MedicationOrder
 import com.mobile.mymeds.models.OrderAnalytics
 import com.mobile.mymeds.models.OrderStatus
 import com.mobile.mymeds.models.UserAnalytics
@@ -15,7 +16,7 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "UserAnalyticsRepo"
 
 /**
- * REPOSITORIO DE ANALÍTICAS - BQT2 (usa OrdersRepository)
+ * REPOSITORIO DE ANALÍTICAS - BQT2 (+ conectividad offline)
  */
 class UserAnalyticsRepository(
     private val db: FirebaseFirestore = FirebaseFirestore.getInstance(),
@@ -23,19 +24,29 @@ class UserAnalyticsRepository(
 ) {
 
     /**
-     * Obtener todas las analíticas del usuario
+     * Obtener todas las analíticas del usuario, con filtros opcionales:
+     *  - days: últimos N días
+     *  - mode: solo pedidos delivery / pickup
      */
-    suspend fun getUserAnalytics(userId: String): UserAnalytics {
+    suspend fun getUserAnalytics(
+        userId: String,
+        days: Int? = null,
+        mode: DeliveryMode? = null
+    ): UserAnalytics {
         return try {
-            Log.d(TAG, "Calculando analíticas para usuario: $userId")
+            Log.d(TAG, "Calculando analíticas para usuario: $userId (days=$days, mode=$mode)")
 
             // 1) Traer pedidos usando OrdersRepository (fuente de verdad)
             val ordersResult = ordersRepo.getUserOrders(userId)
-            val orders = ordersResult.getOrNull().orEmpty()
-            Log.d(TAG, "Pedidos encontrados: ${orders.size}")
+            val allOrders = ordersResult.getOrNull().orEmpty()
+            Log.d(TAG, "Pedidos encontrados (sin filtrar): ${allOrders.size}")
 
-            // 2) Mapear a OrderAnalytics para cálculos
-            val analyticOrders: List<OrderAnalytics> = orders.map { o ->
+            // 2) Aplicar filtros en memoria (si se usan)
+            val filteredOrders = applyFilters(allOrders, days, mode)
+            Log.d(TAG, "Pedidos después de filtros: ${filteredOrders.size}")
+
+            // 3) Mapear a OrderAnalytics para cálculos existentes (BQT2, BQT4, etc.)
+            val analyticOrders: List<OrderAnalytics> = filteredOrders.map { o ->
                 OrderAnalytics(
                     orderId = o.id,
                     deliveryMode = when (o.deliveryType) {
@@ -43,12 +54,13 @@ class UserAnalyticsRepository(
                         DeliveryType.IN_PERSON_PICKUP -> "pickup"
                     },
                     totalAmount = o.totalAmount.toDouble(),
-                    // BQT2-1: podemos contar "unidades" solicitadas (sum of quantities)
+                    // BQT2-1: "unidades" solicitadas (suma de quantities)
                     medicationCount = o.items.sumOf { it.quantity },
                     pharmacyName = o.pharmacyName,
                     status = o.status.name.lowercase(Locale.ROOT),
                     orderDate = o.createdAt?.toDate(),
-                    // Heurística: si fue pickup y el pedido quedó entregado/completado, usamos updatedAt como "fecha de reclamo"
+                    // Heurística: si fue pickup y el pedido quedó entregado/completado,
+                    // usamos updatedAt como "fecha de reclamo"
                     claimedDate =
                         if (o.deliveryType == DeliveryType.IN_PERSON_PICKUP &&
                             (o.status == OrderStatus.DELIVERED || o.status == OrderStatus.COMPLETED)
@@ -58,20 +70,23 @@ class UserAnalyticsRepository(
                 )
             }
 
-            // 3) Delivery vs pickup
+            // 4) Delivery vs pickup
             val deliveryStats = calculateDeliveryStats(analyticOrders)
 
-            // 4) BQT2-1: total y promedio de medicamentos pedidos
+            // 5) BQT2-1: total y promedio de medicamentos pedidos
             val medicationStats = calculateMedicationRequests(analyticOrders)
 
-            // 5) BQT2-2: tiempo desde último reclamo
+            // 6) BQT2-2: tiempo desde último reclamo
             val claimTiming = calculateLastClaimTiming(analyticOrders)
 
-            // 6) Extra
+            // 7) Extra (gasto, farmacia frecuente, estados)
             val additionalStats = calculateAdditionalStats(analyticOrders)
 
-            // BQT4: día del mes que se hizo más refill
+            // 8) BQT4: día del mes que se hizo más refill
             val refillsByDay = calculateRefillsByDay(analyticOrders)
+
+            // 9) Métricas de conectividad offline
+            val offlineStats = calculateOfflineStats(filteredOrders)
 
             UserAnalytics(
                 // pedidos
@@ -100,7 +115,12 @@ class UserAnalyticsRepository(
                 cancelledOrders = additionalStats.cancelledOrders,
 
                 // BQT4
-                refillsByDayOfMonth = refillsByDay
+                refillsByDayOfMonth = refillsByDay,
+
+                // 🔁 Conectividad offline
+                offlineOrdersCount = offlineStats.offlineCount,
+                offlineOrdersPercentage = offlineStats.offlinePercentage,
+                averageOfflineSyncDelayMinutes = offlineStats.avgDelayMinutes
             )
         } catch (e: Exception) {
             Log.e(TAG, "Error calculando analíticas", e)
@@ -109,7 +129,42 @@ class UserAnalyticsRepository(
     }
 
     // ───────────────────────────────────────────────────────────────────────
-    // Cálculos
+    // Filtros en memoria: días y modo (delivery/pickup)
+    // ───────────────────────────────────────────────────────────────────────
+
+    private fun applyFilters(
+        orders: List<MedicationOrder>,
+        days: Int?,
+        mode: DeliveryMode?
+    ): List<MedicationOrder> {
+        var result = orders
+
+        // Filtro por días (últimos N días)
+        if (days != null && days > 0) {
+            val now = Date()
+            val cutoffMillis = now.time - TimeUnit.DAYS.toMillis(days.toLong())
+            result = result.filter { order ->
+                val created = order.createdAt?.toDate()?.time ?: Long.MIN_VALUE
+                created >= cutoffMillis
+            }
+        }
+
+        // Filtro por modo (delivery / pickup)
+        if (mode != null && mode != DeliveryMode.UNKNOWN) {
+            result = result.filter { order ->
+                when (mode) {
+                    DeliveryMode.DELIVERY -> order.deliveryType == DeliveryType.HOME_DELIVERY
+                    DeliveryMode.PICKUP -> order.deliveryType == DeliveryType.IN_PERSON_PICKUP
+                    else -> true
+                }
+            }
+        }
+
+        return result
+    }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Cálculos principales
     // ───────────────────────────────────────────────────────────────────────
 
     private fun calculateDeliveryStats(orders: List<OrderAnalytics>): DeliveryStatsResult {
@@ -136,12 +191,19 @@ class UserAnalyticsRepository(
             else -> DeliveryMode.UNKNOWN
         }
 
-        return DeliveryStatsResult(deliveryCount, pickupCount, deliveryPercentage, pickupPercentage, preferredMode)
+        return DeliveryStatsResult(
+            deliveryCount,
+            pickupCount,
+            deliveryPercentage,
+            pickupPercentage,
+            preferredMode
+        )
     }
 
     private fun calculateMedicationRequests(orders: List<OrderAnalytics>): MedicationStatsResult {
         val totalRequests = orders.sumOf { it.medicationCount }
-        val averagePerOrder = if (orders.isNotEmpty()) totalRequests.toFloat() / orders.size else 0f
+        val averagePerOrder =
+            if (orders.isNotEmpty()) totalRequests.toFloat() / orders.size else 0f
         return MedicationStatsResult(totalRequests, averagePerOrder)
     }
 
@@ -156,9 +218,11 @@ class UserAnalyticsRepository(
             )
         }
 
-        val lastClaimDate: Date = claimedOrders.maxByOrNull { it.claimedDate!! }!!.claimedDate!!
+        val lastClaimDate: Date =
+            claimedOrders.maxByOrNull { it.claimedDate!! }!!.claimedDate!!
         val now = Date()
-        val daysSince = TimeUnit.MILLISECONDS.toDays(now.time - lastClaimDate.time).toInt()
+        val daysSince =
+            TimeUnit.MILLISECONDS.toDays(now.time - lastClaimDate.time).toInt()
 
         val description = when {
             daysSince == 0 -> "Reclamaste hoy"
@@ -174,7 +238,8 @@ class UserAnalyticsRepository(
 
     private fun calculateAdditionalStats(orders: List<OrderAnalytics>): AdditionalStatsResult {
         val totalSpent = orders.sumOf { it.totalAmount }
-        val averageOrderValue = if (orders.isNotEmpty()) totalSpent / orders.size else 0.0
+        val averageOrderValue =
+            if (orders.isNotEmpty()) totalSpent / orders.size else 0.0
 
         val mostFrequentPharmacy = orders
             .filter { it.pharmacyName.isNotBlank() }
@@ -210,7 +275,6 @@ class UserAnalyticsRepository(
         )
     }
 
-
     // ───────────────────────────────────────────────────────────────────────
     // BQT4: Qué días del mes se hicieron más refill
     // ───────────────────────────────────────────────────────────────────────
@@ -221,9 +285,37 @@ class UserAnalyticsRepository(
                 calendar.time = date
                 calendar.get(java.util.Calendar.DAY_OF_MONTH)
             }
-            .map { (day, dates) -> Pair(day, dates.size) }
+            .map { (day, dates) -> day to dates.size }
             .sortedBy { it.first }
     }
+
+    // ───────────────────────────────────────────────────────────────────────
+    // Métricas de conectividad offline
+    // ───────────────────────────────────────────────────────────────────────
+    private fun calculateOfflineStats(orders: List<MedicationOrder>): OfflineStatsResult {
+        if (orders.isEmpty()) return OfflineStatsResult(0, 0f, 0f)
+
+        val offlineOrders = orders.filter { it.createdOffline }
+        val offlineCount = offlineOrders.size
+        val total = orders.size.coerceAtLeast(1)
+        val offlinePct = (offlineCount.toFloat() / total.toFloat()) * 100f
+
+        val avgDelayMinutes = offlineOrders
+            .map { it.offlineSyncDelayMs }
+            .filter { it > 0 }
+            .takeIf { it.isNotEmpty() }
+            ?.average()
+            ?.div(1000 * 60)
+            ?.toFloat()
+            ?: 0f
+
+        return OfflineStatsResult(
+            offlineCount = offlineCount,
+            offlinePercentage = offlinePct,
+            avgDelayMinutes = avgDelayMinutes
+        )
+    }
+
 
     // ───────────────────────────────────────────────────────────────────────
     // Tipos internos
@@ -249,5 +341,11 @@ class UserAnalyticsRepository(
         val activeOrders: Int,
         val completedOrders: Int,
         val cancelledOrders: Int
+    )
+
+    private data class OfflineStatsResult(
+        val offlineCount: Int,
+        val offlinePercentage: Float,
+        val avgDelayMinutes: Float
     )
 }

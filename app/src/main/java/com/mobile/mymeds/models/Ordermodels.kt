@@ -30,7 +30,12 @@ data class MedicationOrder(
     val notes: String = "",
     val createdAt: Timestamp? = null,
     val updatedAt: Timestamp? = null,
-    val estimatedDeliveryDate: Timestamp? = null
+    val estimatedDeliveryDate: Timestamp? = null,
+    // 🆕 campos analíticos
+    val createdOffline: Boolean = false,
+    val offlineCreatedAt: Timestamp? = null,
+    val syncedAt: Timestamp? = null,
+    val offlineSyncDelayMs: Long = 0L
 ) {
     /**
      * Calcula el total del pedido
