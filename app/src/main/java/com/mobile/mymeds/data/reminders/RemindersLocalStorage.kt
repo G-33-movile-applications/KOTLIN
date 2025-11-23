@@ -5,7 +5,13 @@ import androidx.room.*
 import java.util.UUID
 
 // ───────────────── ENTITY ─────────────────
-
+/**
+ * 💾 Local Relational DB (Room) - Requisito: "DB Local Relacional - 10 pts"
+ *
+ * Esta entidad + RemindersDatabase y MedicationRemindersDao implementan
+ * una base de datos relacional local usando Room (SQLite).
+ * Se usa para persistir recordatorios de medicación incluso offline.
+ */
 @Entity(tableName = "medication_reminders")
 data class MedicationReminderEntity(
     @PrimaryKey
