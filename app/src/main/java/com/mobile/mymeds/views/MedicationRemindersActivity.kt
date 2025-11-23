@@ -30,6 +30,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -259,7 +260,7 @@ abstract class RemindersDatabase : RoomDatabase() {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-// 🔔 NOTIFICATION WORKER
+// 🔔 NOTIFICATION WORKER (MEJORADO)
 // ════════════════════════════════════════════════════════════════════════
 
 class ReminderNotificationWorker(
@@ -272,51 +273,81 @@ class ReminderNotificationWorker(
         val medicationName = inputData.getString("medication_name") ?: "Medicamento"
         val time = inputData.getString("time") ?: ""
 
+        println("🔔 Ejecutando Worker de notificación para: $medicationName a las $time")
+
         showNotification(reminderId, medicationName, time)
+
         return Result.success()
     }
 
     private fun showNotification(reminderId: String, medicationName: String, time: String) {
         val notificationManager = applicationContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
+        val channelId = "medication_reminders"
+
         // Crear canal de notificación (Android 8.0+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
-                "medication_reminders",
+                channelId,
                 "Recordatorios de Medicamentos",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Notificaciones para tomar medicamentos"
                 enableVibration(true)
+                vibrationPattern = longArrayOf(0, 500, 250, 500)
+                enableLights(true)
+                lightColor = android.graphics.Color.BLUE
+                setSound(
+                    android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION),
+                    android.media.AudioAttributes.Builder()
+                        .setUsage(android.media.AudioAttributes.USAGE_NOTIFICATION)
+                        .setContentType(android.media.AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
             }
             notificationManager.createNotificationChannel(channel)
+            println("✅ Canal de notificación creado")
         }
 
         // Intent para abrir la app
         val intent = Intent(applicationContext, MedicationRemindersActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            putExtra("reminder_id", reminderId)
         }
+
         val pendingIntent = PendingIntent.getActivity(
             applicationContext,
             reminderId.hashCode(),
             intent,
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         // Construir notificación
-        val notification = NotificationCompat.Builder(applicationContext, "medication_reminders")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+        val notification = NotificationCompat.Builder(applicationContext, channelId)
+            .setSmallIcon(android.R.drawable.ic_dialog_info) // Usa tu propio icono aquí
             .setContentTitle("💊 Hora de tomar tu medicamento")
             .setContentText("$medicationName - $time")
+            .setStyle(NotificationCompat.BigTextStyle()
+                .bigText("Es hora de tomar $medicationName. Programado para las $time.")
+            )
             .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_REMINDER)
             .setAutoCancel(true)
             .setContentIntent(pendingIntent)
+            .setVibrate(longArrayOf(0, 500, 250, 500))
+            .setSound(android.media.RingtoneManager.getDefaultUri(android.media.RingtoneManager.TYPE_NOTIFICATION))
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
             .build()
 
-        notificationManager.notify(reminderId.hashCode(), notification)
+        try {
+            notificationManager.notify(reminderId.hashCode(), notification)
+            println("✅ Notificación mostrada: $medicationName a las $time")
+        } catch (e: Exception) {
+            println("❌ Error mostrando notificación: ${e.message}")
+            e.printStackTrace()
+        }
     }
 }
-
 // ════════════════════════════════════════════════════════════════════════
 // 🌐 NETWORK CONNECTIVITY MONITOR
 // ════════════════════════════════════════════════════════════════════════
@@ -1188,7 +1219,7 @@ class MedicationReminderRepository(
 
     // ──────────────────────── NOTIFICACIONES ─────────────────────────
 
-    private fun scheduleNotifications(reminder: MedicationReminder) {
+    fun scheduleNotifications(reminder: MedicationReminder) {
         val workManager = WorkManager.getInstance(context)
 
         // Cancelar notificaciones existentes para este recordatorio
@@ -1224,13 +1255,17 @@ class MedicationReminderRepository(
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, minute)
             set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
 
+            // Si la hora ya pasó hoy, programar para mañana
             if (timeInMillis <= System.currentTimeMillis()) {
                 add(Calendar.DAY_OF_MONTH, 1)
             }
         }
 
         val delay = calendar.timeInMillis - System.currentTimeMillis()
+
+        println("⏰ Programando notificación única en ${delay / 1000 / 60} minutos")
 
         val workRequest = OneTimeWorkRequestBuilder<ReminderNotificationWorker>()
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
@@ -1241,9 +1276,14 @@ class MedicationReminderRepository(
                     "time" to reminder.time
                 )
             )
+            .addTag("reminder_${reminder.id}")
             .build()
 
-        WorkManager.getInstance(context).enqueue(workRequest)
+        WorkManager.getInstance(context).enqueueUniqueWork(
+            "reminder_${reminder.id}",
+            ExistingWorkPolicy.REPLACE,
+            workRequest
+        )
     }
 
     private fun scheduleDailyNotification(reminder: MedicationReminder, hour: Int, minute: Int) {
@@ -1251,7 +1291,9 @@ class MedicationReminderRepository(
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, minute)
             set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
 
+            // Si la hora ya pasó hoy, programar para mañana
             if (timeInMillis <= System.currentTimeMillis()) {
                 add(Calendar.DAY_OF_MONTH, 1)
             }
@@ -1259,8 +1301,13 @@ class MedicationReminderRepository(
 
         val delay = calendar.timeInMillis - System.currentTimeMillis()
 
+        println("⏰ Programando notificación diaria - primera en ${delay / 1000 / 60} minutos")
+
+        // Usar PeriodicWorkRequest con intervalo de 1 día (mínimo 15 minutos)
+        // Para intervalos más cortos, WorkManager requiere al menos 15 minutos
         val workRequest = PeriodicWorkRequestBuilder<ReminderNotificationWorker>(
-            1, TimeUnit.DAYS
+            1, TimeUnit.DAYS,
+            15, TimeUnit.MINUTES // Flex interval
         )
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
             .setInputData(
@@ -1270,6 +1317,7 @@ class MedicationReminderRepository(
                     "time" to reminder.time
                 )
             )
+            .addTag("reminder_${reminder.id}")
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -1284,7 +1332,9 @@ class MedicationReminderRepository(
             set(Calendar.HOUR_OF_DAY, hour)
             set(Calendar.MINUTE, minute)
             set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
 
+            // Si la hora ya pasó esta semana, programar para la próxima semana
             if (timeInMillis <= System.currentTimeMillis()) {
                 add(Calendar.WEEK_OF_YEAR, 1)
             }
@@ -1292,8 +1342,11 @@ class MedicationReminderRepository(
 
         val delay = calendar.timeInMillis - System.currentTimeMillis()
 
+        println("⏰ Programando notificación semanal - primera en ${delay / 1000 / 60 / 60} horas")
+
         val workRequest = PeriodicWorkRequestBuilder<ReminderNotificationWorker>(
-            7, TimeUnit.DAYS
+            7, TimeUnit.DAYS,
+            1, TimeUnit.DAYS // Flex interval
         )
             .setInitialDelay(delay, TimeUnit.MILLISECONDS)
             .setInputData(
@@ -1303,6 +1356,7 @@ class MedicationReminderRepository(
                     "time" to reminder.time
                 )
             )
+            .addTag("reminder_${reminder.id}")
             .build()
 
         WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -1313,13 +1367,17 @@ class MedicationReminderRepository(
     }
 
     private fun scheduleCustomDaysNotification(reminder: MedicationReminder, hour: Int, minute: Int) {
+        println("⏰ Programando notificaciones para días personalizados: ${reminder.customDays.joinToString { it.label }}")
+
         reminder.customDays.forEach { day ->
             val calendar = Calendar.getInstance().apply {
                 set(Calendar.HOUR_OF_DAY, hour)
                 set(Calendar.MINUTE, minute)
                 set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
                 set(Calendar.DAY_OF_WEEK, day.calendarDay)
 
+                // Si el día ya pasó esta semana, programar para la próxima semana
                 if (timeInMillis <= System.currentTimeMillis()) {
                     add(Calendar.WEEK_OF_YEAR, 1)
                 }
@@ -1327,17 +1385,23 @@ class MedicationReminderRepository(
 
             val delay = calendar.timeInMillis - System.currentTimeMillis()
 
+            println("  ${day.label}: en ${delay / 1000 / 60 / 60} horas")
+
             val workRequest = PeriodicWorkRequestBuilder<ReminderNotificationWorker>(
-                7, TimeUnit.DAYS
+                7, TimeUnit.DAYS,
+                1, TimeUnit.DAYS
             )
                 .setInitialDelay(delay, TimeUnit.MILLISECONDS)
                 .setInputData(
                     workDataOf(
                         "reminder_id" to reminder.id,
                         "medication_name" to reminder.medicationName,
-                        "time" to reminder.time
+                        "time" to reminder.time,
+                        "day" to day.name
                     )
                 )
+                .addTag("reminder_${reminder.id}")
+                .addTag("reminder_${reminder.id}_${day.name}")
                 .build()
 
             WorkManager.getInstance(context).enqueueUniquePeriodicWork(
@@ -1630,6 +1694,15 @@ class MedicationRemindersActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(
+                    arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                    100
+                )
+            }
+        }
         setContent {
             val snackbarHostState = remember { SnackbarHostState() }
             val scope = rememberCoroutineScope()
@@ -2179,6 +2252,9 @@ private fun CreateReminderDialog(
     var expanded by remember { mutableStateOf(false) }
     var notificationsEnabled by remember { mutableStateOf(true) }
 
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Nuevo recordatorio") },
@@ -2238,9 +2314,8 @@ private fun CreateReminderDialog(
                                     onClick = {
                                         selectedMedication = medication
                                         customName = medication.name
-                                        // Sugerencia automática de hora basada en frecuencia
                                         if (medication.frequencyHours > 0 && time.isBlank()) {
-                                            time = "08:00" // Hora sugerida
+                                            time = "08:00"
                                         }
                                         expanded = false
                                     }
@@ -2407,28 +2482,73 @@ private fun CreateReminderDialog(
             }
         },
         confirmButton = {
-            TextButton(
-                onClick = {
-                    val finalName = if (selectedMedication != null) {
-                        selectedMedication!!.name
-                    } else {
-                        customName.trim()
-                    }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                // Botón de prueba de notificación
+                TextButton(
+                    onClick = {
+                        // Probar notificación inmediata
+                        val testReminder = MedicationReminder(
+                            id = "test_${System.currentTimeMillis()}",
+                            medicationName = customName.ifBlank { "Medicamento de prueba" },
+                            time = time.ifBlank { "00:00" },
+                            notificationsEnabled = true
+                        )
 
-                    if (finalName.isBlank() || time.isBlank()) return@TextButton
-                    if (recurrence == ReminderRecurrence.CUSTOM_DAYS && selectedDays.isEmpty()) return@TextButton
+                        val workRequest = OneTimeWorkRequestBuilder<ReminderNotificationWorker>()
+                            .setInitialDelay(3, TimeUnit.SECONDS)
+                            .setInputData(
+                                workDataOf(
+                                    "reminder_id" to testReminder.id,
+                                    "medication_name" to testReminder.medicationName,
+                                    "time" to testReminder.time
+                                )
+                            )
+                            .build()
 
-                    onSave(
-                        finalName,
-                        selectedMedication?.id,
-                        time.trim(),
-                        recurrence,
-                        selectedDays,
-                        notificationsEnabled
+                        WorkManager.getInstance(context).enqueue(workRequest)
+
+                        scope.launch {
+                            // Necesitas pasar el snackbarHostState desde el Activity
+                            println("🔔 Notificación de prueba programada en 3 segundos")
+                        }
+                    },
+                    colors = ButtonDefaults.textButtonColors(
+                        contentColor = Color(0xFFFF9800)
                     )
+                ) {
+                    Icon(
+                        Icons.Filled.Notifications,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text("Probar")
                 }
-            ) {
-                Text("Guardar")
+
+                // Botón de guardar
+                TextButton(
+                    onClick = {
+                        val finalName = if (selectedMedication != null) {
+                            selectedMedication!!.name
+                        } else {
+                            customName.trim()
+                        }
+
+                        if (finalName.isBlank() || time.isBlank()) return@TextButton
+                        if (recurrence == ReminderRecurrence.CUSTOM_DAYS && selectedDays.isEmpty()) return@TextButton
+
+                        onSave(
+                            finalName,
+                            selectedMedication?.id,
+                            time.trim(),
+                            recurrence,
+                            selectedDays,
+                            notificationsEnabled
+                        )
+                    }
+                ) {
+                    Text("Guardar")
+                }
             }
         },
         dismissButton = {

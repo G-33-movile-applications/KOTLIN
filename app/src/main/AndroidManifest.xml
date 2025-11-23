@@ -2,33 +2,54 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
     package="com.mobile.mymeds">
-    <uses-permission android:name="android.permission.INTERNET" />
 
-    <!-- Permisos de Internet (necesario para cargar el mapa) -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- PERMISOS DE RED E INTERNET -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- Permisos de ubicación (para mostrar la ubicación del usuario) -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- PERMISOS DE UBICACIÓN -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- PERMISOS DE CÁMARA Y ARCHIVOS -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- PERMISOS DE NOTIFICACIONES Y ALARMAS (RECORDATORIOS) -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- PERMISOS NFC -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
     <uses-permission android:name="android.permission.NFC" />
 
-    <!-- Feature de Google Maps (opcional pero recomendado) -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
+    <!-- FEATURES DEL HARDWARE (OPCIONALES) -->
+    <!-- ═══════════════════════════════════════════════════════════════════ -->
     <uses-feature
         android:name="android.hardware.location.gps"
         android:required="false" />
-    <uses-feature android:name="android.hardware.nfc" android:required="false" />
-
-    <!-- Permisos para cámara y almacenamiento -->
+    <uses-feature
+        android:name="android.hardware.nfc"
+        android:required="false" />
     <uses-feature
         android:name="android.hardware.camera"
         android:required="false" />
-
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
 
     <application
         android:name="com.mobile.mymeds.MyMedsApplication"
@@ -39,14 +60,19 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.MyMeds">
+        android:theme="@style/Theme.MyMeds"
+        tools:targetApi="31">
 
-        <!-- API Key de Google Maps -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- API KEY DE GOOGLE MAPS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyAeAshcyIaxXOjyu6ve5vbPaE7rCs1wF-Q" />
 
-        <!-- LoginActivity será la primera pantalla -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITY PRINCIPAL - LOGIN -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <activity
             android:name="com.mobile.mymeds.views.LoginActivity"
             android:exported="true"
@@ -57,79 +83,132 @@
             </intent-filter>
         </activity>
 
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE AUTENTICACIÓN -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <activity
+            android:name="com.mobile.mymeds.views.RegisterActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <activity
+            android:name="com.mobile.mymeds.views.PasswordResetActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES PRINCIPALES -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <activity
+            android:name="com.mobile.mymeds.views.HomeActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <activity
+            android:name="com.mobile.mymeds.views.ProfileActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE MAPA Y DELIVERY -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <activity
+            android:name="com.mobile.mymeds.views.MapActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
         <activity
             android:name="com.mobile.mymeds.views.DeliveryActivity"
             android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- Pantalla de registro -->
-        <activity
-            android:name="com.mobile.mymeds.views.RegisterActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds" />
-        <!-- PharmacyInventory -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE FARMACIA -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <activity
             android:name="com.mobile.mymeds.views.PharmacyInventoryActivity"
             android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- HomeActivity -->
         <activity
-            android:name="com.mobile.mymeds.views.HomeActivity"
-            android:exported="true"
+            android:name="com.mobile.mymeds.views.OrdersManagementActivity"
+            android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- MapActivity -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE PRESCRIPCIONES -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <activity
-            android:name="com.mobile.mymeds.views.MapActivity"
-            android:exported="true"
+            android:name="com.mobile.mymeds.views.PrescriptionsActivity"
+            android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- Pantalla de recuperación de contraseña -->
         <activity
-            android:name="com.mobile.mymeds.views.PasswordResetActivity"
-            android:exported="true"
+            android:name="com.mobile.mymeds.views.UploadPrescriptionActivity"
+            android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- Pantalla de perfil -->
         <activity
-            android:name="com.mobile.mymeds.views.ProfileActivity"
-            android:exported="true"
+            android:name="com.mobile.mymeds.views.UploadPrescriptionPhotoActivity"
+            android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
-        <!-- Subir prescripción (Home) -->
-        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds"/>
+        <activity
+            android:name="com.mobile.mymeds.views.UploadPrescriptionPDFActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
 
-        <!-- NFC (usa enableReaderMode; sin filters) -->
-        <activity android:name="com.mobile.mymeds.views.UploadByNfcActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds"/>
-        <!-- Imagen y PDF -->
-        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionPhotoActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds"/>
-        <activity android:name="com.mobile.mymeds.views.UploadPrescriptionPDFActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds"/>
-        <activity android:name="com.mobile.mymeds.views.OrdersManagementActivity"
-            android:exported="true"
-            android:theme="@style/Theme.MyMeds"/>
+        <activity
+            android:name="com.mobile.mymeds.views.UploadByNfcActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
 
-        <!-- Servicio detección conducción -->
-        <service android:name="com.mobile.mymeds.services.DrivingDetector"
-            android:enabled="true" />
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE RECORDATORIOS Y ANÁLISIS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <activity
+            android:name="com.mobile.mymeds.views.MedicationRemindersActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
 
+        <activity
+            android:name="com.mobile.mymeds.views.AnalyticsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- SERVICIOS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <service
+            android:name="com.mobile.mymeds.services.DrivingDetector"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- RECEIVERS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+
+        <!-- Receiver para mantener sesión -->
         <receiver
             android:name="com.mobile.mymeds.session.KeepSignedInReceiver"
             android:exported="false" />
 
-        <activity android:name="com.mobile.mymeds.views.PrescriptionsActivity" />
-        <activity android:name="com.mobile.mymeds.views.AnalyticsActivity" />
-        <activity android:name="com.mobile.mymeds.views.MedicationRemindersActivity" />
+        <!-- Receiver para reiniciar alarmas después de reinicio del dispositivo -->
+        <receiver
+            android:name="com.mobile.mymeds.views.BootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.RECEIVE_BOOT_COMPLETED">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </receiver>
 
-
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- FILE PROVIDER PARA COMPARTIR ARCHIVOS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -139,7 +218,6 @@
                 android:name="android.support.FILE_PROVIDER_PATHS"
                 android:resource="@xml/file_paths" />
         </provider>
-
 
     </application>
 </manifest>
