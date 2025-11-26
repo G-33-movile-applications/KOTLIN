@@ -90,6 +90,12 @@
             android:exported="true"
             android:theme="@style/Theme.MyMeds" />
 
+        <activity
+            android:name="com.mobile.mymeds.views.InvoicesActivity"
+            android:exported="true"
+            android:theme="@style/Theme.MyMeds" />
+
+
         <!-- Pantalla de perfil -->
         <activity
             android:name="com.mobile.mymeds.views.ProfileActivity"

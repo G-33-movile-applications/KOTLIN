@@ -74,6 +74,7 @@ class HomeActivity : ComponentActivity() {
                             onPrescriptionsClick = { if (!isDriving) navigateToPrescriptions() },
                             onAnalyticsClick = { if (!isDriving) navigateToAnalytics() },
                             onRemindersClick = { if (!isDriving) navigateToReminders() },
+                            onInvoicesClick = { if (!isDriving) navigateToInvoices() }, // NUEVA
 
                             // Siempre disponibles
                             onNotificationsClick = { showNotifications() },
@@ -115,6 +116,10 @@ class HomeActivity : ComponentActivity() {
         startActivity(Intent(this, AnalyticsActivity::class.java))
     }
 
+    private fun navigateToInvoices() {
+        startActivity(Intent(this, InvoicesActivity::class.java))
+    }
+
     private fun showNotifications() {
         // TODO: Implementar lógica de notificaciones
     }
@@ -140,11 +145,12 @@ fun HomeScreen(
     onLogoutClick: () -> Unit = {},
     onOrdersClick: () -> Unit = {},
     onPrescriptionsClick: () -> Unit = {},
-    onAnalyticsClick: () -> Unit = {},// NUEVO: icono de analíticas en la barra
-    onRemindersClick: () -> Unit = {}
+    onAnalyticsClick: () -> Unit = {},
+    onRemindersClick: () -> Unit = {},
+    onInvoicesClick: () -> Unit = {} // NUEVO parámetro
 ) {
-    // Tabs: "Tus pedidos" / "Tus prescripciones"
-    val tabs = listOf("Tus pedidos", "Tus prescripciones")
+    // Tabs: "Tus pedidos" / "Tus prescripciones" / "Tus facturas"
+    val tabs = listOf("Tus pedidos", "Tus prescripciones", "Tus facturas")
     var selectedTab by remember { mutableStateOf(0) }
 
     Scaffold(
@@ -169,7 +175,7 @@ fun HomeScreen(
                     }
                     IconButton(onClick = onRemindersClick) {
                         Icon(
-                            imageVector = Icons.Filled.AccessTime,   // o Icons.Filled.Alarm si prefieres
+                            imageVector = Icons.Filled.AccessTime,
                             contentDescription = "Recordatorios",
                             tint = Color.White
                         )
@@ -235,12 +241,17 @@ fun HomeScreen(
                                     Text(
                                         title,
                                         color = Color.Black,
-                                        fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal
+                                        fontWeight = if (selectedTab == index) FontWeight.Bold else FontWeight.Normal,
+                                        fontSize = 13.sp
                                     )
                                 },
                                 icon = {
-                                    val icon: ImageVector =
-                                        if (index == 0) Icons.Filled.ShoppingCart else Icons.Filled.Description
+                                    val icon: ImageVector = when (index) {
+                                        0 -> Icons.Filled.ShoppingCart
+                                        1 -> Icons.Filled.Description
+                                        2 -> Icons.Filled.Receipt // Icono para facturas
+                                        else -> Icons.Filled.Description
+                                    }
                                     Icon(icon, contentDescription = null, tint = Color.Black)
                                 },
                                 selectedContentColor = Color.Black,
@@ -253,7 +264,13 @@ fun HomeScreen(
 
                     // CTA principal dependiente de la pestaña
                     Button(
-                        onClick = { if (selectedTab == 0) onOrdersClick() else onPrescriptionsClick() },
+                        onClick = {
+                            when (selectedTab) {
+                                0 -> onOrdersClick()
+                                1 -> onPrescriptionsClick()
+                                2 -> onInvoicesClick() // NUEVA navegación
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(48.dp),
@@ -262,13 +279,23 @@ fun HomeScreen(
                         elevation = ButtonDefaults.buttonElevation(defaultElevation = 0.dp)
                     ) {
                         Icon(
-                            imageVector = if (selectedTab == 0) Icons.Filled.ShoppingCart else Icons.Filled.Description,
+                            imageVector = when (selectedTab) {
+                                0 -> Icons.Filled.ShoppingCart
+                                1 -> Icons.Filled.Description
+                                2 -> Icons.Filled.Receipt
+                                else -> Icons.Filled.Description
+                            },
                             contentDescription = null,
                             tint = Color.Black
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            text = if (selectedTab == 0) "Ver pedidos" else "Ver prescripciones",
+                            text = when (selectedTab) {
+                                0 -> "Ver pedidos"
+                                1 -> "Ver prescripciones"
+                                2 -> "Ver facturas"
+                                else -> "Ver"
+                            },
                             color = Color.Black,
                             fontSize = 15.sp,
                             fontWeight = FontWeight.SemiBold
