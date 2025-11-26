@@ -11,4 +11,10 @@
 
     <!-- Caché externo -->
     <external-cache-path name="external_cache" path="/" />
+
+    <!-- Directorio de facturas/documentos -->
+    <external-files-path name="invoices" path="Documents/invoices/" />
+
+    <!-- Todos los archivos externos de la app -->
+    <external-files-path name="app_files" path="." />
 </paths>
