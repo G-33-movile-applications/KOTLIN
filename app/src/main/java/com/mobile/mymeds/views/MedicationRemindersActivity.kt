@@ -58,6 +58,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import java.util.Date
 import okhttp3.*
@@ -1061,6 +1062,43 @@ class MedicationReminderRepository(
         }
     }
 
+    suspend fun updateReminder(reminder: MedicationReminder): Result<Unit> {
+        return withContext(Dispatchers.IO) {
+            try {
+                val updated = reminder.copy(
+                    lastModifiedMillis = System.currentTimeMillis(),
+                    syncStatus = if (isConnected.value) SyncStatus.PENDING_SYNC else SyncStatus.LOCAL_ONLY
+                )
+
+                println("✏️ Actualizando recordatorio: ${updated.medicationName} a las ${updated.time}")
+                dao.upsert(updated.toEntity())
+
+                // Reprogramar notificaciones según el nuevo estado
+                if (updated.isActive && updated.notificationsEnabled) {
+                    println("🔔 Reprogramando notificaciones después de edición...")
+                    scheduleNotifications(updated)
+                } else {
+                    println("🔕 Cancelando notificaciones después de edición...")
+                    cancelNotifications(updated.id)
+                }
+
+                // Intentar sincronizar si hay internet
+                if (isConnected.value) {
+                    println("🔥 Sincronizando cambios con Firebase...")
+                    tryUpdateReminderInFirebase(updated)
+                } else {
+                    println("📴 Sin conexión - cambios pendientes de sincronizar")
+                }
+
+                Result.success(Unit)
+            } catch (e: Exception) {
+                println("❌ Error actualizando recordatorio: ${e.message}")
+                e.printStackTrace()
+                Result.failure(e)
+            }
+        }
+    }
+
     suspend fun setReminderActive(reminderId: String, active: Boolean) {
         withContext(Dispatchers.IO) {
             val syncStatus = if (isConnected.value) SyncStatus.PENDING_SYNC.name else SyncStatus.LOCAL_ONLY.name
@@ -1620,6 +1658,42 @@ class MedicationRemindersViewModel(
             }
         }
     }
+    fun editReminder(
+        original: MedicationReminder,
+        medicationName: String,
+        medicationId: String?,
+        time: String,
+        recurrence: ReminderRecurrence,
+        customDays: Set<DayOfWeek>,
+        notificationsEnabled: Boolean,
+        onResult: (Boolean, String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val updated = original.copy(
+                    medicationName = medicationName,
+                    medicationId = medicationId,
+                    time = time,
+                    recurrence = recurrence,
+                    customDays = customDays,
+                    notificationsEnabled = notificationsEnabled
+                )
+
+                val result = repository.updateReminder(updated)
+                if (result.isSuccess) {
+                    loadReminders()
+                    println("✅ Recordatorio actualizado correctamente")
+                    onResult(true, null)
+                } else {
+                    result.exceptionOrNull()?.printStackTrace()
+                    onResult(false, result.exceptionOrNull()?.message)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+                onResult(false, e.message)
+            }
+        }
+    }
 
     fun toggleReminder(
         reminder: MedicationReminder,
@@ -1680,6 +1754,53 @@ class MedicationRemindersViewModel(
         super.onCleared()
         repository.cleanup()
     }
+
+    data class ReminderBatchItem(
+        val medicationName: String,
+        val medicationId: String?,
+        val time: String,
+        val recurrence: ReminderRecurrence,
+        val customDays: Set<DayOfWeek>,
+        val notificationsEnabled: Boolean
+    )
+
+    fun createBatchReminders(
+        items: List<ReminderBatchItem>,
+        onResult: (createdCount: Int) -> Unit
+    ) {
+        viewModelScope.launch {
+            val limited = items.take(3) // máximo 3 en paralelo
+            var createdCount = 0
+
+            kotlinx.coroutines.coroutineScope {
+                limited.map { item ->
+                    async(Dispatchers.IO) {
+                        val result = repository.createReminder(
+                            medicationName = item.medicationName,
+                            medicationId = item.medicationId,
+                            time = item.time,
+                            recurrence = item.recurrence,
+                            customDays = item.customDays,
+                            notificationsEnabled = item.notificationsEnabled
+                        )
+                        if (result.isSuccess) {
+                            println("✅ Batch: recordatorio creado para ${item.medicationName} @ ${item.time}")
+                            1
+                        } else {
+                            println("❌ Batch: error creando recordatorio para ${item.medicationName}")
+                            0
+                        }
+                    }
+                }.forEach { deferred ->
+                    createdCount += deferred.await()
+                }
+            }
+
+            loadReminders()
+            onResult(createdCount)
+        }
+    }
+
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -1710,9 +1831,12 @@ class MedicationRemindersActivity : ComponentActivity() {
             val isConnected by vm.isConnected.collectAsState()
             var showCreateDialog by remember { mutableStateOf(false) }
             var showCacheStats by remember { mutableStateOf(false) }
+            var reminderToEdit by remember { mutableStateOf<MedicationReminder?>(null) }
 
             // Estado de sincronización
             var isSyncing by remember { mutableStateOf(false) }
+            var reminderToDelete by remember { mutableStateOf<MedicationReminder?>(null) }
+            var showDeleteDialog by remember { mutableStateOf(false) }
 
             MaterialTheme(
                 colorScheme = lightColorScheme(
@@ -1758,6 +1882,8 @@ class MedicationRemindersActivity : ComponentActivity() {
                                         }
                                     }
                                 }
+
+                                // 🔍 Botón para ver estadísticas de cache
                                 IconButton(onClick = {
                                     vm.updateCacheStats()
                                     showCacheStats = true
@@ -1768,6 +1894,54 @@ class MedicationRemindersActivity : ComponentActivity() {
                                         tint = Color.White
                                     )
                                 }
+
+                                // ⚡ Botón demo: crear 3 recordatorios en paralelo
+                                IconButton(
+                                    onClick = {
+                                        val batch = listOf(
+                                            MedicationRemindersViewModel.ReminderBatchItem(
+                                                medicationName = "Vitamina C – Mañana",
+                                                medicationId = null,
+                                                time = "08:00",
+                                                recurrence = ReminderRecurrence.DAILY,
+                                                customDays = emptySet(),
+                                                notificationsEnabled = true
+                                            ),
+                                            MedicationRemindersViewModel.ReminderBatchItem(
+                                                medicationName = "Vitamina C – Tarde",
+                                                medicationId = null,
+                                                time = "14:00",
+                                                recurrence = ReminderRecurrence.DAILY,
+                                                customDays = emptySet(),
+                                                notificationsEnabled = true
+                                            ),
+                                            MedicationRemindersViewModel.ReminderBatchItem(
+                                                medicationName = "Vitamina C – Noche",
+                                                medicationId = null,
+                                                time = "20:00",
+                                                recurrence = ReminderRecurrence.DAILY,
+                                                customDays = emptySet(),
+                                                notificationsEnabled = true
+                                            )
+                                        )
+
+                                        vm.createBatchReminders(batch) { createdCount ->
+                                            scope.launch {
+                                                snackbarHostState.showSnackbar(
+                                                    "⚡ Se crearon $createdCount de ${batch.size} recordatorios en paralelo"
+                                                )
+                                            }
+                                        }
+                                    }
+                                ) {
+                                    Icon(
+                                        Icons.Filled.Bolt,  // importa: import androidx.compose.material.icons.filled.Bolt
+                                        contentDescription = "Crear batch",
+                                        tint = Color.White
+                                    )
+                                }
+
+                                // 🔄 Botón de sincronización manual
                                 IconButton(
                                     onClick = {
                                         isSyncing = true
@@ -1843,8 +2017,7 @@ class MedicationRemindersActivity : ComponentActivity() {
                             }
 
                             is RemindersUiState.Success -> {
-                                val reminders =
-                                    (uiState as RemindersUiState.Success).reminders
+                                val reminders = (uiState as RemindersUiState.Success).reminders
                                 if (reminders.isEmpty()) {
                                     EmptyRemindersView()
                                 } else {
@@ -1857,10 +2030,13 @@ class MedicationRemindersActivity : ComponentActivity() {
                                                 }
                                             }
                                         },
-                                        onEdit = { _ ->
-                                            scope.launch {
-                                                snackbarHostState.showSnackbar("Edición de recordatorios próximamente")
-                                            }
+                                        onEdit = { reminder ->
+                                            reminderToEdit = reminder
+                                            showCreateDialog = true
+                                        },
+                                        onDelete = { reminder ->
+                                            reminderToDelete = reminder
+                                            showDeleteDialog = true
                                         }
                                     )
                                 }
@@ -1870,61 +2046,67 @@ class MedicationRemindersActivity : ComponentActivity() {
                 }
             }
 
+
             // Dialogo de creación
             if (showCreateDialog) {
                 val medications by vm.availableMedications
 
-                if (medications.isEmpty()) {
-                    // Mostrar mensaje si no hay medicamentos
-                    AlertDialog(
-                        onDismissRequest = { showCreateDialog = false },
-                        title = { Text("Sin medicamentos disponibles") },
-                        text = {
-                            Text("No tienes medicamentos en tus prescripciones activas. Puedes crear un recordatorio con un nombre personalizado o agregar primero una prescripción con medicamentos.")
-                        },
-                        confirmButton = {
-                            TextButton(onClick = {
-                                // Continuar sin selector de medicamentos
-                            }) {
-                                Text("Crear manualmente")
-                            }
-                        },
-                        dismissButton = {
-                            TextButton(onClick = { showCreateDialog = false }) {
-                                Text("Cancelar")
-                            }
-                        }
-                    )
-                }
-
                 CreateReminderDialog(
                     availableMedications = medications,
-                    onDismiss = { showCreateDialog = false },
+                    onDismiss = {
+                        showCreateDialog = false
+                        reminderToEdit = null
+                    },
+                    existingReminder = reminderToEdit,
                     onSave = { name, medId, time, recurrence, customDays, notificationsEnabled ->
-                        vm.createReminder(
-                            medicationName = name,
-                            medicationId = medId,
-                            time = time,
-                            recurrence = recurrence,
-                            customDays = customDays,
-                            notificationsEnabled = notificationsEnabled
-                        ) { success, errorMsg ->
-                            showCreateDialog = false
-                            scope.launch {
-                                if (success) {
-                                    snackbarHostState.showSnackbar(
-                                        "✅ Recordatorio creado${if (notificationsEnabled) " y notificaciones programadas" else ""}"
-                                    )
-                                } else {
-                                    snackbarHostState.showSnackbar(
-                                        errorMsg ?: "Error creando recordatorio"
-                                    )
+                        if (reminderToEdit == null) {
+                            // CREAR
+                            vm.createReminder(
+                                medicationName = name,
+                                medicationId = medId,
+                                time = time,
+                                recurrence = recurrence,
+                                customDays = customDays,
+                                notificationsEnabled = notificationsEnabled
+                            ) { success, errorMsg ->
+                                showCreateDialog = false
+                                reminderToEdit = null
+                                scope.launch {
+                                    if (success) {
+                                        snackbarHostState.showSnackbar(
+                                            "✅ Recordatorio creado${if (notificationsEnabled) " y notificaciones programadas" else ""}"
+                                        )
+                                    } else {
+                                        snackbarHostState.showSnackbar(errorMsg ?: "Error creando recordatorio")
+                                    }
+                                }
+                            }
+                        } else {
+                            // EDITAR
+                            vm.editReminder(
+                                original = reminderToEdit!!,
+                                medicationName = name,
+                                medicationId = medId,
+                                time = time,
+                                recurrence = recurrence,
+                                customDays = customDays,
+                                notificationsEnabled = notificationsEnabled
+                            ) { success, errorMsg ->
+                                showCreateDialog = false
+                                reminderToEdit = null
+                                scope.launch {
+                                    if (success) {
+                                        snackbarHostState.showSnackbar("✅ Recordatorio actualizado")
+                                    } else {
+                                        snackbarHostState.showSnackbar(errorMsg ?: "Error actualizando recordatorio")
+                                    }
                                 }
                             }
                         }
                     }
                 )
             }
+
 
             // Diálogo de estadísticas del cache
             if (showCacheStats) {
@@ -1936,6 +2118,46 @@ class MedicationRemindersActivity : ComponentActivity() {
                         vm.clearCache()
                         scope.launch {
                             snackbarHostState.showSnackbar("Cache limpiado")
+                        }
+                    }
+                )
+            }
+            if (showDeleteDialog && reminderToDelete != null) {
+                AlertDialog(
+                    onDismissRequest = {
+                        showDeleteDialog = false
+                        reminderToDelete = null
+                    },
+                    title = { Text("Eliminar recordatorio") },
+                    text = { Text("¿Seguro que deseas eliminar el recordatorio de \"${reminderToDelete!!.medicationName}\"?") },
+                    confirmButton = {
+                        TextButton(
+                            onClick = {
+                                val toDelete = reminderToDelete!!
+                                showDeleteDialog = false
+                                reminderToDelete = null
+                                vm.deleteReminder(toDelete) { success, errorMsg ->
+                                    scope.launch {
+                                        if (success) {
+                                            snackbarHostState.showSnackbar("✅ Recordatorio eliminado")
+                                        } else {
+                                            snackbarHostState.showSnackbar(errorMsg ?: "Error eliminando recordatorio")
+                                        }
+                                    }
+                                }
+                            }
+                        ) {
+                            Text("Eliminar", color = Color(0xFFD32F2F))
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(
+                            onClick = {
+                                showDeleteDialog = false
+                                reminderToDelete = null
+                            }
+                        ) {
+                            Text("Cancelar")
                         }
                     }
                 )
@@ -1979,7 +2201,8 @@ private fun ConnectivityBadge(isConnected: Boolean) {
 private fun RemindersList(
     reminders: List<MedicationReminder>,
     onToggle: (MedicationReminder) -> Unit,
-    onEdit: (MedicationReminder) -> Unit
+    onEdit: (MedicationReminder) -> Unit,
+    onDelete: (MedicationReminder) -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -1990,7 +2213,8 @@ private fun RemindersList(
             ReminderCard(
                 reminder = reminder,
                 onToggle = { onToggle(reminder) },
-                onEdit = { onEdit(reminder) }
+                onEdit = { onEdit(reminder) },
+                onDelete = { onDelete(reminder) }
             )
         }
     }
@@ -2000,8 +2224,10 @@ private fun RemindersList(
 private fun ReminderCard(
     reminder: MedicationReminder,
     onToggle: () -> Unit,
-    onEdit: () -> Unit
-) {
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+)
+ {
     Card(
         shape = RoundedCornerShape(12.dp),
         colors = CardDefaults.cardColors(
@@ -2111,7 +2337,13 @@ private fun ReminderCard(
                             tint = Color(0xFF455A64)
                         )
                     }
-
+                    IconButton(onClick = onDelete) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = "Eliminar",
+                            tint = Color(0xFFD32F2F)
+                        )
+                    }
                     Switch(
                         checked = reminder.isActive,
                         onCheckedChange = { onToggle() },
@@ -2242,8 +2474,10 @@ private fun ErrorRemindersView(
 private fun CreateReminderDialog(
     availableMedications: List<AvailableMedication>,
     onDismiss: () -> Unit,
-    onSave: (String, String?, String, ReminderRecurrence, Set<DayOfWeek>, Boolean) -> Unit
-) {
+    onSave: (String, String?, String, ReminderRecurrence, Set<DayOfWeek>, Boolean) -> Unit,
+    existingReminder: MedicationReminder? = null
+)
+ {
     var selectedMedication by remember { mutableStateOf<AvailableMedication?>(null) }
     var customName by remember { mutableStateOf("") }
     var time by remember { mutableStateOf("") }
@@ -2257,7 +2491,7 @@ private fun CreateReminderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Nuevo recordatorio") },
+        title = { Text(if (existingReminder == null) "Nuevo recordatorio" else "Editar recordatorio") },
         text = {
             Column(
                 modifier = Modifier
