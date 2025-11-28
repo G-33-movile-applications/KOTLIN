@@ -1,14 +1,22 @@
 package com.mobile.mymeds.workers
 
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.util.Log
+import androidx.core.app.ActivityCompat
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.mobile.mymeds.data.local.room.AppDatabase
-import com.mobile.mymeds.viewModels.NfcViewModel
 import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.gson.Gson
+import com.mobile.mymeds.data.local.room.AppDatabase
+import com.mobile.mymeds.viewModels.NfcViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -20,7 +28,7 @@ import java.util.Date
 import java.util.Locale
 
 class NfcSyncWorker(
-    appContext: Context,
+    private val appContext: Context,
     workerParams: WorkerParameters
 ) : CoroutineWorker(appContext, workerParams) {
 
@@ -37,28 +45,71 @@ class NfcSyncWorker(
 
         Log.d("NfcSyncWorker", "Found ${pendingPrescriptions.size} prescriptions to sync.")
 
-        var allSucceeded = true
+        val uploader = NfcFirebaseUploader()
+        var successfulSyncCount = 0
+
         for (pendingRx in pendingPrescriptions) {
             try {
                 val nfcData = gson.fromJson(pendingRx.nfcDataJson, NfcViewModel.NfcData::class.java)
-
-                val uploader = NfcFirebaseUploader()
                 uploader.uploadPrescription(pendingRx.userId, nfcData)
 
-                // Si se sube exitosamente, entonces se elimina
                 dao.deleteById(pendingRx.id)
+                successfulSyncCount++
                 Log.d("NfcSyncWorker", "Successfully synced and deleted prescription ID: ${pendingRx.id}")
 
             } catch (e: Exception) {
-                Log.e("NfcSyncWorker", "Failed to sync prescription ID: ${pendingRx.id}", e)
-                allSucceeded = false
-                // Si uno falla, se fuarda y se intenta después
+                Log.e("NfcSyncWorker", "Failed to sync prescription ID: ${pendingRx.id}. Will retry later.", e)
+                return Result.retry()
             }
         }
 
-        return if (allSucceeded) Result.success() else Result.retry()
+        if (successfulSyncCount > 0) {
+            showSyncSuccessNotification(successfulSyncCount)
+        }
+
+        return Result.success()
+    }
+
+    private fun showSyncSuccessNotification(count: Int) {
+        val channelId = "nfc_sync_channel"
+        val notificationId = 123
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val name = "Sincronización de Datos"
+            val descriptionText = "Notificaciones sobre la subida de datos pendientes."
+            val importance = NotificationManager.IMPORTANCE_DEFAULT
+            val channel = NotificationChannel(channelId, name, importance).apply {
+                description = descriptionText
+            }
+            val notificationManager: NotificationManager =
+                appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            notificationManager.createNotificationChannel(channel)
+        }
+
+        // Construir la notificación.
+        val builder = NotificationCompat.Builder(appContext, channelId)
+            // Asegúrate de tener un icono ic_cloud_done en tu carpeta res/drawable.
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("Sincronización Completada")
+            .setContentText("$count prescripción(es) se guardaron en la nube.")
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setAutoCancel(true)
+
+        // Mostrar la notificación.
+        with(NotificationManagerCompat.from(appContext)) {
+            if (ActivityCompat.checkSelfPermission(
+                    appContext,
+                    Manifest.permission.POST_NOTIFICATIONS
+                ) != PackageManager.PERMISSION_GRANTED
+            ) {
+                Log.w("NfcSyncWorker", "Permission to post notifications not granted.")
+                return
+            }
+            notify(notificationId, builder.build())
+        }
     }
 }
+
 
 class NfcFirebaseUploader {
     private val firestore = FirebaseFirestore.getInstance()
@@ -84,7 +135,6 @@ class NfcFirebaseUploader {
         }
     }
 
-    // --- COPIED from NfcViewModel ---
     private fun mapNfcDataToPrescriptionHashMap(nfcData: NfcViewModel.NfcData): HashMap<String, Any> {
         return hashMapOf(
             "activa" to true,
@@ -97,7 +147,6 @@ class NfcFirebaseUploader {
         )
     }
 
-    // --- COPIED from NfcViewModel ---
     private suspend fun mapNfcMedsToHashMapList(
         medications: List<NfcViewModel.NfcMedication>,
         firestorePrescriptionId: String,

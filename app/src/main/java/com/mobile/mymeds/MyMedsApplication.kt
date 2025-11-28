@@ -12,6 +12,6 @@ class MyMedsApplication : Application() {
     private val firestore by lazy { Firebase.firestore }
 
     val globalMedicationRepository by lazy {
-        GlobalMedicationRepository(firestore, database.globalMedicationDao())
+        GlobalMedicationRepository(firestore, database.globalMedicationDao(), this)
     }
 }

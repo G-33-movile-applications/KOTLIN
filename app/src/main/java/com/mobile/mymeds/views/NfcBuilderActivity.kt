@@ -5,10 +5,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CalendarToday
-import androidx.compose.material.icons.filled.Done
-import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -39,9 +36,9 @@ fun NfcBuilderActivity(
 ) {
     val application = LocalContext.current.applicationContext as MyMedsApplication
     val viewModel: NfcBuilderViewModel = viewModel(
-        factory = NfcBuilderViewModelFactory(application.globalMedicationRepository)
+        factory = NfcBuilderViewModelFactory(application)
     )
-    val allMedications by viewModel.allMedications.collectAsState()
+    val uiState by viewModel.uiState.collectAsState()
 
     val selectedMeds = remember { mutableStateListOf<EditableMedication>() }
 
@@ -66,9 +63,7 @@ fun NfcBuilderActivity(
             FloatingActionButton(
                 onClick = {
                     if (selectedMeds.isNotEmpty()) {
-                        // Crea la lista de jsons de meds
                         val medJsonStrings = selectedMeds.map { editableMed ->
-                            // Construye el med
                             """{"drug":"${editableMed.medication.nombre}","dose":"${getDoseFromString(editableMed.medication.nombre)}","freq":"${editableMed.frequency}h","days":${editableMed.days}}"""
                         }
                         onBuildPrescription(medJsonStrings)
@@ -85,41 +80,75 @@ fun NfcBuilderActivity(
                 .padding(paddingValues)
                 .padding(16.dp)
         ) {
-            if (allMedications.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text("Cargando medicamentos...")
+            when {
+                // ESTADO 1: Sin conexión y sin caché.
+                uiState.showOfflineAndNoCacheError -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            modifier = Modifier.padding(32.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.CloudOff,
+                                "Sin conexión",
+                                modifier = Modifier.size(64.dp),
+                                tint = MaterialTheme.colorScheme.error
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                "Sin Conexión a Internet",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                "No se pueden cargar los medicamentos y no hay datos guardados. Conéctate a internet para continuar.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
-            } else {
-                LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    items(allMedications, key = { it.id }) { medication ->
-                        val index = selectedMeds.indexOfFirst { it.medication.id == medication.id }
-                        val isSelected = index != -1
 
-                        SelectableMedicationItem(
-                            medication = medication,
-                            editableMed = if (isSelected) selectedMeds[index] else null,
-                            isSelected = isSelected,
-                            onToggle = {
-                                if (isSelected) {
-                                    selectedMeds.removeAt(index)
-                                } else {
-                                    selectedMeds.add(EditableMedication(medication = medication))
+                // ESTADO 2: Cargando por primera vez (la caché está vacía).
+                uiState.availableMedications.isEmpty() -> {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            CircularProgressIndicator()
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text("Cargando medicamentos...")
+                        }
+                    }
+                }
+
+                // ESTADO 3: Hay medicamentos para mostrar.
+                else -> {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        items(uiState.availableMedications, key = { it.id }) { medication ->
+                            val index = selectedMeds.indexOfFirst { it.medication.id == medication.id }
+                            val isSelected = index != -1
+
+                            SelectableMedicationItem(
+                                medication = medication,
+                                editableMed = if (isSelected) selectedMeds[index] else null,
+                                isSelected = isSelected,
+                                onToggle = {
+                                    if (isSelected) {
+                                        selectedMeds.removeAt(index)
+                                    } else {
+                                        selectedMeds.add(EditableMedication(medication = medication))
+                                    }
+                                },
+                                onFrequencyChange = { newFreq ->
+                                    if (isSelected) selectedMeds[index] = selectedMeds[index].copy(frequency = newFreq)
+                                },
+                                onDaysChange = { newDays ->
+                                    if (isSelected) selectedMeds[index] = selectedMeds[index].copy(days = newDays)
                                 }
-                            },
-                            onFrequencyChange = { newFreq ->
-                                if (isSelected) selectedMeds[index] = selectedMeds[index].copy(frequency = newFreq)
-                            },
-                            onDaysChange = { newDays ->
-                                if (isSelected) selectedMeds[index] = selectedMeds[index].copy(days = newDays)
-                            }
-                        )
+                            )
+                        }
                     }
                 }
             }

@@ -1,46 +1,53 @@
 package com.mobile.mymeds.repository
 
+import android.content.Context
 import android.util.Log
+import com.google.firebase.firestore.FirebaseFirestore
 import com.mobile.mymeds.data.local.room.dao.GlobalMedicationDao
 import com.mobile.mymeds.models.GlobalMedication
-import com.google.firebase.firestore.FirebaseFirestore
+import com.mobile.mymeds.utils.ConnectivityUtils
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.tasks.await
 
 /**
  * Repositorio para manejar la lista de medicamentos globales.
- * mediador entre data sources (Firestore, Room) y los ViewModels.
- * implementa la estrategia Lazy loading
+ * Mediador entre data sources (Firestore, Room) y los ViewModels.
+ * Implementa la estrategia de "Caché-Primero" siendo consciente de la red.
  */
 class GlobalMedicationRepository(
     private val firestore: FirebaseFirestore,
-    private val globalMedicationDao: GlobalMedicationDao
+    private val globalMedicationDao: GlobalMedicationDao,
+    private val context: Context
 ) {
 
     /**
-     * Flow que va al cache, si algun componente de UI la observa
-     * tiene la data inmediata con actualizaciones cuando el cache cambie
+     * Flow que expone los datos desde la caché de Room.
      */
     val allMedications: Flow<List<GlobalMedication>> = globalMedicationDao.getAll()
 
     /**
-     * Cache-Aside trigger, es la que actualiza el cache local contra firestore
+     * Intenta actualizar la caché local desde Firestore, pero solo si hay conexión.
      */
     suspend fun refreshMedications() {
+        if (!ConnectivityUtils.isNetworkAvailable(context)) {
+            Log.d("GlobalMedicationRepo", "Sin conexión a internet. Se usará la caché local.")
+            return
+        }
+
         try {
-            //Trae la info de manera asincrónica
+            Log.d("GlobalMedicationRepo", "Red disponible. Refrescando caché desde Firestore.")
             val remoteMedications = firestore.collection("medicamentosGlobales")
                 .get()
                 .await()
                 .toObjects(GlobalMedication::class.java)
 
+            globalMedicationDao.clearAll()
             globalMedicationDao.insertAll(remoteMedications)
 
-            Log.d("GlobalMedicationRepo", "Cache successfully refreshed with ${remoteMedications.size} items.")
+            Log.d("GlobalMedicationRepo", "Caché refrescada con ${remoteMedications.size} medicamentos.")
 
         } catch (e: Exception) {
-            // Si no hay conexión solo se registra que no se pudo refrescar, se usa cache local
-            Log.e("GlobalMedicationRepo", "Failed to refresh cache from Firestore: ${e.message}")
+            Log.e("GlobalMedicationRepo", "Error al refrescar la caché desde Firestore: ${e.message}")
         }
     }
 }

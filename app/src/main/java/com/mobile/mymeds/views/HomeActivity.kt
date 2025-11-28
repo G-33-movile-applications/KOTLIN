@@ -1,9 +1,14 @@
 package com.mobile.mymeds.views
 
 import android.content.Intent
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.result.launch
 import androidx.activity.viewModels
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
@@ -27,14 +32,26 @@ import com.mobile.mymeds.viewModels.MainViewModel
 import com.mobile.mymeds.views.components.DrivingModeOverlay
 import com.google.firebase.auth.FirebaseAuth
 import androidx.compose.material.icons.filled.AccessTime
+import androidx.core.content.ContextCompat
 
 
 class HomeActivity : ComponentActivity() {
     private val mainViewModel: MainViewModel by viewModels()
+    private val requestPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { isGranted: Boolean ->
+            if (isGranted) {
+                // El permiso fue concedido.
+            } else {
+                // El permiso fue denegado.
+            }
+        }
 
     @OptIn(ExperimentalMaterial3Api::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        askNotificationPermission()
+        mainViewModel.startDrivingDetection(applicationContext)
 
         // Detecta si se está conduciendo
         mainViewModel.startDrivingDetection(applicationContext)
@@ -88,6 +105,18 @@ class HomeActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    private fun askNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Comprueba si el permiso ya ha sido concedido.
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) !=
+                PackageManager.PERMISSION_GRANTED
+            ) {
+                // Si el permiso no ha sido concedido, lanza el diálogo del sistema para pedirlo.
+                requestPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
             }
         }
     }

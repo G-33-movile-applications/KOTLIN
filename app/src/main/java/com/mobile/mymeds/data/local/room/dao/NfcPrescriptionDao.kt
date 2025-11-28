@@ -11,6 +11,9 @@ interface NfcPrescriptionDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(prescription: NfcPrescriptionEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(prescriptions: List<NfcPrescriptionEntity>)
+
     @Query("SELECT * FROM pending_nfc_prescriptions")
     suspend fun getAll(): List<NfcPrescriptionEntity>
 
