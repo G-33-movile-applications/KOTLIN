@@ -24,6 +24,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
@@ -39,7 +40,7 @@ class UploadByNfcActivity : ComponentActivity() {
 
     private val vm: NfcViewModel by viewModels()
     private var nfcAdapter: NfcAdapter? = null
-    
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         nfcAdapter = NfcAdapter.getDefaultAdapter(this)
@@ -132,7 +133,10 @@ fun UploadByNfcScreen(
         }
     ) { pad ->
         LazyColumn(
-            modifier = Modifier.padding(pad).padding(horizontal = 16.dp).fillMaxSize(),
+            modifier = Modifier
+                .padding(pad)
+                .padding(horizontal = 16.dp)
+                .fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             contentPadding = PaddingValues(bottom = 16.dp)
         ) {
@@ -145,7 +149,9 @@ fun UploadByNfcScreen(
             if (ui.isSaving) {
                 item {
                     Column(
-                        modifier = Modifier.fillParentMaxWidth().padding(vertical = 32.dp),
+                        modifier = Modifier
+                            .fillParentMaxWidth()
+                            .padding(vertical = 32.dp),
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center
                     ) {
@@ -163,7 +169,10 @@ fun UploadByNfcScreen(
                     item {
                         Button(
                             onClick = onSaveAll,
-                            modifier = Modifier.fillMaxWidth().height(56.dp).padding(top = 8.dp)
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(56.dp)
+                                .padding(top = 8.dp)
                         ) {
                             Icon(Icons.Filled.Save, contentDescription = "Subir todo")
                             Spacer(Modifier.width(8.dp))
@@ -215,7 +224,8 @@ fun UploadByNfcScreen(
 private fun PrescriptionDetailsCard(prescription: NfcViewModel.NfcData) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
+        colors = CardDefaults.cardColors(containerColor = Color(0xFFE3F2FD))
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(

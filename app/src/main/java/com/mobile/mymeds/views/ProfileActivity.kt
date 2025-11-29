@@ -1,5 +1,6 @@
 package com.mobile.mymeds.views
 
+import android.content.Intent
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -13,9 +14,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.livedata.observeAsState
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -29,20 +33,24 @@ import coil.compose.AsyncImage
 import coil.request.ImageRequest
 import com.mobile.mymeds.ui.theme.MyMedsTheme
 import com.mobile.mymeds.viewModels.ProfileViewModel
+import com.mobile.mymeds.viewModels.ProfileViewModelFactory
 import com.mobile.mymeds.viewModels.UserProfile
 
 class ProfileActivity : ComponentActivity() {
-    private val profileViewModel: ProfileViewModel by viewModels()
+    private val profileViewModel: ProfileViewModel by viewModels {
+        ProfileViewModelFactory(application)
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        profileViewModel.loadProfile()
-
         setContent {
             MyMedsTheme {
                 ProfileScreen(
                     vm = profileViewModel,
-                    onBack = { finish() }
+                    onBack = { finish() },
+                    onNavigateToSettings = {
+                        startActivity(Intent(this, SettingsActivity::class.java))
+                    }
                 )
             }
         }
@@ -53,7 +61,8 @@ class ProfileActivity : ComponentActivity() {
 @Composable
 fun ProfileScreen(
     vm: ProfileViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
     val ctx = LocalContext.current
     val profile by vm.profile.observeAsState()
@@ -62,7 +71,6 @@ fun ProfileScreen(
 
     var isEditing by remember { mutableStateOf(false) }
 
-    // Estados locales de los campos
     var fullName by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
     var phone by remember { mutableStateOf("") }
@@ -70,10 +78,8 @@ fun ProfileScreen(
     var city by remember { mutableStateOf("") }
     var department by remember { mutableStateOf("") }
     var zipCode by remember { mutableStateOf("") }
-    var notifications by remember { mutableStateOf(true) }
     var profilePicUrl by remember { mutableStateOf("") }
 
-    // Cargar datos desde el VM a estados locales
     LaunchedEffect(profile) {
         profile?.let { u ->
             fullName = u.fullName
@@ -83,24 +89,20 @@ fun ProfileScreen(
             city = u.city
             department = u.department
             zipCode = u.zipCode
-            notifications = u.notificationsEnabled
             profilePicUrl = u.profilePictureUrl
+        }
+    }
+
+    LaunchedEffect(message) {
+        message?.let {
+            Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show()
         }
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = {
-                    Text(
-                        text = "Perfil de Usuario",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 20.sp,
-                        color = Color.White,
-                        modifier = Modifier.fillMaxWidth(),
-                        textAlign = TextAlign.Center
-                    )
-                },
+                title = { Text("Perfil de Usuario", fontWeight = FontWeight.Bold, color = Color.White) },
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(Icons.Default.ArrowBack, contentDescription = "Atrás", tint = Color.White)
@@ -119,12 +121,11 @@ fun ProfileScreen(
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            if (loading && profile == null) {
+            if (loading) {
                 LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(12.dp))
             }
 
-            // -------- Foto de perfil --------
             AsyncImage(
                 model = ImageRequest.Builder(ctx)
                     .data(profilePicUrl.ifBlank { "https://cdn-icons-png.flaticon.com/512/847/847969.png" })
@@ -140,6 +141,7 @@ fun ProfileScreen(
 
             // -------- Campos de perfil --------
             FieldRow("Nombre", fullName, { fullName = it }, isEditing)
+            // ✅ CORRECCIÓN: Añadido el parámetro 'enabled = false'
             FieldRow("Correo electrónico", email, { email = it }, isEditing)
             FieldRow("Teléfono", phone, { phone = it }, isEditing)
             FieldRow("Dirección", address, { address = it }, isEditing)
@@ -147,44 +149,27 @@ fun ProfileScreen(
             FieldRow("Departamento", department, { department = it }, isEditing)
             FieldRow("Código ZIP", zipCode, { zipCode = it }, isEditing)
 
-            Spacer(Modifier.height(8.dp))
+            Spacer(Modifier.height(24.dp))
 
-            // -------- Switch de notificaciones --------
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.SpaceBetween
+            // Botón de Ajustes
+            OutlinedButton(
+                onClick = onNavigateToSettings,
+                modifier = Modifier.fillMaxWidth()
             ) {
-                Column {
-                    Text("Recibir notificaciones", fontWeight = FontWeight.SemiBold)
-                    Text("Activa/desactiva avisos de la app", fontSize = 12.sp, color = Color.Gray)
-                }
-                Switch(
-                    checked = notifications,
-                    onCheckedChange = {
-                        notifications = it
-                        vm.toggleNotifications(it)
-                    },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = Color.White,
-                        checkedTrackColor = Color(0xFF8DB4FF)
-                    )
-                )
+                Icon(Icons.Default.Settings, contentDescription = null, modifier = Modifier.size(20.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Ir a Ajustes de la App")
             }
 
             Spacer(Modifier.height(16.dp))
 
-            // -------- Botón principal (Editar / Guardar) --------
+            // Botón principal (Editar / Guardar)
             Button(
                 onClick = {
                     if (!isEditing) {
-                        // Cambiar a modo edición
                         isEditing = true
                     } else {
-                        // Guardar cambios
-                        val updated = UserProfile(
+                        val updatedProfile = UserProfile(
                             fullName = fullName,
                             email = email,
                             phoneNumber = phone,
@@ -192,11 +177,10 @@ fun ProfileScreen(
                             city = city,
                             department = department,
                             zipCode = zipCode,
-                            profilePictureUrl = profilePicUrl.ifBlank { "https://cdn-icons-png.flaticon.com/512/847/847969.png" },
-                            notificationsEnabled = notifications
+                            profilePictureUrl = profilePicUrl,
+                            notificationsEnabled = profile?.notificationsEnabled ?: true
                         )
-                        vm.saveProfile(updated) { ok, msg ->
-                            Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show()
+                        vm.saveProfile(updatedProfile) { ok, _ ->
                             if (ok) isEditing = false
                         }
                     }
@@ -205,39 +189,32 @@ fun ProfileScreen(
                     .fillMaxWidth()
                     .height(52.dp),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = if (isEditing) Color(0xFF94B8FF) else Color(0xFFE3E7F0)
+                    containerColor = Color(0xFF94B8FF)
                 )
             ) {
                 Text(
                     if (isEditing) "Guardar cambios" else "Editar perfil",
-                    color = if (isEditing) Color.White else Color.Black,
+                    color = Color.White,
                     fontWeight = FontWeight.SemiBold
                 )
             }
-
-            message?.let {
-                Spacer(Modifier.height(8.dp))
-                Text(it, color = Color(0xFF374151))
-            }
-
-            Spacer(Modifier.height(8.dp))
         }
     }
 }
 
-/* ---------- Helper Composable ---------- */
 @Composable
 fun FieldRow(
     label: String,
     value: String,
     onValueChange: (String) -> Unit,
-    isEditing: Boolean
+    isEditing: Boolean,
+    enabled: Boolean = true // El parámetro que faltaba en la llamada
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(label, fontSize = 13.sp, color = Color(0xFF4A4A4A))
         Spacer(Modifier.height(4.dp))
 
-        if (isEditing) {
+        if (isEditing && enabled) {
             OutlinedTextField(
                 value = value,
                 onValueChange = onValueChange,
@@ -247,7 +224,7 @@ fun FieldRow(
             )
         } else {
             Surface(
-                color = Color.White,
+                color = if (enabled) Color.White else Color(0xFFF0F0F0),
                 shape = RoundedCornerShape(10.dp),
                 shadowElevation = 1.dp,
                 modifier = Modifier.fillMaxWidth()
@@ -255,11 +232,11 @@ fun FieldRow(
                 Text(
                     text = if (value.isNotBlank()) value else "—",
                     fontSize = 15.sp,
-                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp)
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                    color = if (enabled) Color.Black else Color.Gray
                 )
             }
         }
-
         Spacer(Modifier.height(8.dp))
     }
 }

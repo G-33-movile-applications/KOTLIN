@@ -69,8 +69,11 @@ import kotlin.math.sin
 import kotlin.math.sqrt
 import com.google.firebase.firestore.Source
 import androidx.compose.material.icons.filled.CloudUpload
-
-
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import com.mobile.mymeds.data.local.datastore.UserPreferencesManager
+import com.mobile.mymeds.repository.AutofillRepository
+import kotlinx.coroutines.flow.first
 
 private const val TAG = "OrdersManagementActivity"
 private const val PENDING_ORDERS_KEY = "pending_orders_local"
@@ -194,7 +197,9 @@ data class PharmacyWithDistance(
 
 @RequiresApi(Build.VERSION_CODES.O)
 class EnhancedOrdersViewModel(
-    private val context: Context
+    private val context: Context,
+    private val autofillRepository: AutofillRepository,
+    private val userPreferencesManager: UserPreferencesManager
 ) : ViewModel() {
 
     private val ordersRepository = OrdersRepository()
@@ -897,6 +902,34 @@ class EnhancedOrdersViewModel(
         )
     }
 
+    /**
+     * Obtiene la sugerencia para un campo específico del checkout, si la feature está activada
+     */
+    suspend fun getSuggestionFor(fieldId: String): String? {
+        return if (userPreferencesManager.smartAutofillEnabled.first()) {
+            autofillRepository.getSuggestionFor(fieldId)
+        } else {
+            null
+        }
+    }
+
+    /**
+     * Registra las selecciones del usuario del checkout en la base de datos local.
+     */
+    private fun recordCheckoutInteractions(
+        deliveryAddress: String,
+        phoneNumber: String,
+        notes: String
+    ) {
+        viewModelScope.launch {
+            if (userPreferencesManager.smartAutofillEnabled.first()) {
+                autofillRepository.recordInteraction("checkout_address", deliveryAddress)
+                autofillRepository.recordInteraction("checkout_phone", phoneNumber)
+                autofillRepository.recordInteraction("checkout_notes", notes)
+                Log.d(TAG, "📝 Interacciones de checkout registradas para Smart Autofill.")
+            }
+        }
+    }
 
     fun updateCartItemQuantity(medicationId: String, newQuantity: Int) {
         val current = _cart.value
@@ -946,6 +979,8 @@ class EnhancedOrdersViewModel(
             onError("El carrito está vacío")
             return
         }
+
+        recordCheckoutInteractions(deliveryAddress, phoneNumber, notes)
 
         // 🆕 Verificar conectividad antes de proceder
         if (!isNetworkAvailable()) {
@@ -1046,18 +1081,22 @@ class EnhancedOrdersViewModel(
     }
 }
 
-
 class EnhancedOrdersViewModelFactory(
     private val context: Context
 ) : androidx.lifecycle.ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(EnhancedOrdersViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return EnhancedOrdersViewModel(context) as T
+            val database = com.mobile.mymeds.data.local.room.AppDatabase.getDatabase(context)
+            val autofillRepo = com.mobile.mymeds.repository.AutofillRepository(database.userInteractionDao())
+            val userPrefs = com.mobile.mymeds.data.local.datastore.UserPreferencesManager(context)
+
+            return EnhancedOrdersViewModel(context, autofillRepo, userPrefs) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }
 }
+
 // ═══════════════════════════════════════════════════════════════════════════
 // UI
 // ═══════════════════════════════════════════════════════════════════════════
@@ -1355,6 +1394,9 @@ fun EnhancedOrdersManagementScreen(
                         Toast.makeText(context, error, Toast.LENGTH_LONG).show()
                     }
                 )
+            },
+            getSuggestion = { fieldId -> vm.getSuggestionFor(fieldId) },
+            onAcceptSuggestion = { fieldId, suggestion ->
             }
         )
     }
@@ -2017,12 +2059,24 @@ fun CheckoutDialog(
     detectedAddress: String,
     isConnected: Boolean, // 🆕 Nuevo parámetro
     onDismiss: () -> Unit,
-    onConfirm: (DeliveryType, String, String, String) -> Unit
+    onConfirm: (DeliveryType, String, String, String) -> Unit,
+    getSuggestion: suspend (String) -> String?,
+    onAcceptSuggestion: (fieldId: String, suggestion: String) -> Unit
 ) {
     var selectedDeliveryType by remember { mutableStateOf(DeliveryType.HOME_DELIVERY) }
     var address by remember { mutableStateOf(detectedAddress) }
     var phoneNumber by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
+
+    // Estados para las sugerencias
+    var addressSuggestion by remember { mutableStateOf<String?>(null) }
+    var phoneSuggestion by remember { mutableStateOf<String?>(null) }
+
+    // Obtener sugerencias al abrir dialogo
+    LaunchedEffect(Unit) {
+        addressSuggestion = getSuggestion("checkout_address")
+        phoneSuggestion = getSuggestion("checkout_phone")
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -2148,6 +2202,11 @@ fun CheckoutDialog(
                             focusedLabelColor = CustomBlue2
                         )
                     )
+                    SuggestionChip(
+                        suggestion = addressSuggestion,
+                        currentValue = address,
+                        onClick = { suggestion -> address = suggestion }
+                    )
                 }
 
                 Spacer(Modifier.height(8.dp))
@@ -2161,6 +2220,11 @@ fun CheckoutDialog(
                         focusedBorderColor = CustomBlue2,
                         focusedLabelColor = CustomBlue2
                     )
+                )
+                SuggestionChip(
+                    suggestion = phoneSuggestion,
+                    currentValue = phoneNumber,
+                    onClick = { suggestion -> phoneNumber = suggestion }
                 )
 
                 Spacer(Modifier.height(8.dp))
@@ -2309,5 +2373,27 @@ fun OrderStatusBadge(status: OrderStatus) {
     }
     Surface(shape = RoundedCornerShape(16.dp), color = color.copy(alpha = 0.2f)) {
         Text(text, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp), style = MaterialTheme.typography.labelSmall, color = color, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun SuggestionChip(
+    suggestion: String?,
+    currentValue: String,
+    onClick: (String) -> Unit
+) {
+    if (suggestion != null && currentValue.isBlank() && suggestion.isNotBlank()) {
+        AssistChip(
+            modifier = Modifier.padding(top = 4.dp),
+            onClick = { onClick(suggestion) },
+            label = { Text(suggestion, style = MaterialTheme.typography.labelSmall) },
+            leadingIcon = {
+                Icon(
+                    Icons.Filled.AutoAwesome,
+                    contentDescription = "Sugerencia",
+                    modifier = Modifier.size(16.dp)
+                )
+            }
+        )
     }
 }

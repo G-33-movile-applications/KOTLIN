@@ -177,6 +177,15 @@
             android:theme="@style/Theme.MyMeds" />
 
         <!-- ═══════════════════════════════════════════════════════════════ -->
+        <!-- ACTIVITIES DE SETTINGS -->
+        <!-- ═══════════════════════════════════════════════════════════════ -->
+
+        <activity
+            android:name=".views.SettingsActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds" />
+
+        <!-- ═══════════════════════════════════════════════════════════════ -->
         <!-- SERVICIOS -->
         <!-- ═══════════════════════════════════════════════════════════════ -->
         <service

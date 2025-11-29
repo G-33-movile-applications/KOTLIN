@@ -9,9 +9,11 @@ import com.mobile.mymeds.data.local.room.converters.Converters
 import com.mobile.mymeds.data.local.room.dao.GlobalMedicationDao
 import com.mobile.mymeds.data.local.room.dao.MedicationDao
 import com.mobile.mymeds.data.local.room.dao.NfcPrescriptionDao
+import com.mobile.mymeds.data.local.room.dao.UserInteractionDao
 import com.mobile.mymeds.data.local.room.entitites.NfcPrescriptionEntity
 import com.mobile.mymeds.data.local.room.entitites.MedicationEntity
 import com.mobile.mymeds.models.GlobalMedication
+import com.mobile.mymeds.models.UserInteraction
 
 /**
  * Clase main para la app, es Singleton para evitar tener varias instancias
@@ -21,9 +23,10 @@ import com.mobile.mymeds.models.GlobalMedication
     entities = [
         GlobalMedication::class, // GlobalMedication cache
         MedicationEntity::class,
-        NfcPrescriptionEntity::class
+        NfcPrescriptionEntity::class,
+        UserInteraction::class
     ],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -32,6 +35,8 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun globalMedicationDao(): GlobalMedicationDao
     abstract fun medicationDao(): MedicationDao
     abstract fun nfcPrescriptionDao(): NfcPrescriptionDao
+
+    abstract fun userInteractionDao(): UserInteractionDao
 
     companion object {
         // @Volatile para que la instancia esté al día
