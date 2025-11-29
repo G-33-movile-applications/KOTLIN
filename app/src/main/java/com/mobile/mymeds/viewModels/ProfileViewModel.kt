@@ -1,12 +1,18 @@
 package com.mobile.mymeds.viewModels
 
+import android.app.Application
 import android.util.Log
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.mobile.mymeds.data.local.datastore.UserPreferencesManager
+import com.mobile.mymeds.data.local.room.AppDatabase
+import com.mobile.mymeds.repository.AutofillRepository
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 
@@ -19,12 +25,16 @@ data class UserProfile(
     val city: String = "",
     val department: String = "",
     val zipCode: String = "",
-    val profilePictureUrl: String = "https://cdn-icons-png.flaticon.com/512/847/847969.png", // mockup default
+    val profilePictureUrl: String = "https://cdn-icons-png.flaticon.com/512/847/847969.png",
     val notificationsEnabled: Boolean = true
 )
 
 // --- ViewModel --- //
-class ProfileViewModel : ViewModel() {
+class ProfileViewModel(
+    private val userPrefsManager: UserPreferencesManager,
+    private val autofillRepository: AutofillRepository,
+    private val application: Application
+) : ViewModel() {
 
     private val auth: FirebaseAuth = FirebaseAuth.getInstance()
     private val firestore: FirebaseFirestore = FirebaseFirestore.getInstance()
@@ -41,6 +51,31 @@ class ProfileViewModel : ViewModel() {
     /**
      * Carga el perfil del usuario autenticado desde Firestore.
      */
+    private val _smartAutofillEnabled = MutableLiveData<Boolean>()
+    val smartAutofillEnabled: LiveData<Boolean> = _smartAutofillEnabled
+
+    init {
+        loadProfile()
+        viewModelScope.launch {
+            _smartAutofillEnabled.value = userPrefsManager.smartAutofillEnabled.first()
+        }
+    }
+
+    fun setSmartAutofillEnabled(isEnabled: Boolean) {
+        viewModelScope.launch {
+            userPrefsManager.setSmartAutofillEnabled(isEnabled)
+            _smartAutofillEnabled.value = isEnabled
+            _message.postValue(if (isEnabled) "Autocompletado inteligente activado" else "Autocompletado inteligente desactivado")
+        }
+    }
+
+    fun clearAutofillHistory() {
+        viewModelScope.launch {
+            autofillRepository.clearInteractionHistory()
+            _message.postValue("Historial de sugerencias borrado.")
+        }
+    }
+
     fun loadProfile() {
         viewModelScope.launch {
             _loading.postValue(true)
@@ -98,22 +133,9 @@ class ProfileViewModel : ViewModel() {
                     onResult(false, "No logged user")
                     return@launch
                 }
-
-                val data = hashMapOf(
-                    "fullName" to updated.fullName,
-                    "email" to updated.email,
-                    "phoneNumber" to updated.phoneNumber,
-                    "address" to updated.address,
-                    "city" to updated.city,
-                    "department" to updated.department,
-                    "zipCode" to updated.zipCode,
-                    "profilePictureUrl" to updated.profilePictureUrl,
-                    "notificationsEnabled" to updated.notificationsEnabled
-                )
-
                 firestore.collection("usuarios")
                     .document(uid)
-                    .set(data)
+                    .set(updated)
                     .addOnSuccessListener {
                         _profile.postValue(updated)
                         _message.postValue("Profile updated successfully.")
@@ -158,5 +180,18 @@ class ProfileViewModel : ViewModel() {
                     _message.postValue(e.message ?: "Error updating notifications")
                 }
         }
+    }
+}
+
+class ProfileViewModelFactory(private val application: Application) : ViewModelProvider.Factory {
+    @Suppress("UNCHECKED_CAST")
+    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+        if (modelClass.isAssignableFrom(ProfileViewModel::class.java)) {
+            val database = AppDatabase.getDatabase(application)
+            val autofillRepository = AutofillRepository(database.userInteractionDao())
+            val userPreferencesManager = UserPreferencesManager(application)
+            return ProfileViewModel(userPreferencesManager, autofillRepository, application) as T
+        }
+        throw IllegalArgumentException("Unknown ViewModel class")
     }
 }

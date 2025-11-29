@@ -25,34 +25,37 @@ import com.mobile.mymeds.data.local.room.AppDatabase
 import com.mobile.mymeds.data.local.room.entitites.NfcPrescriptionEntity
 import com.mobile.mymeds.workers.NfcFirebaseUploader
 import com.mobile.mymeds.workers.NfcSyncWorker
-import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Representa la acción NFC exclusiva que el usuario quiere realizar.
+ */
+sealed class NfcActionState {
+    object None : NfcActionState()
+    object Read : NfcActionState()
+    data class Write(val jsonData: String) : NfcActionState()
+    object Wipe : NfcActionState()
+}
 
 data class UiState(
     val supported: Boolean = false,
     val enabled: Boolean = false,
-    val reading: Boolean = false,
-    val status: String = "",
-    val lastPayload: String? = null,
-    val parsedData: NfcViewModel.NfcData? = null,
-    val isSaving: Boolean = false
+    val status: String = "Seleccione una acción", // Campo de texto único para el estado
+    val isSaving: Boolean = false,
+    val pendingPrescriptions: List<NfcViewModel.NfcData> = emptyList()
 )
-
-private enum class PendingAction { NONE, WRITE, WIPE }
 
 private val Ndef.isWriteProtected: Boolean
     get() = this.canMakeReadOnly() && !this.isWritable
@@ -74,54 +77,87 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
         @SerializedName("days") val durationInDays: Int
     )
 
-    private var pendingAction = PendingAction.NONE
-    private var dataToWrite: String? = null
+    private val _nfcAction = MutableStateFlow<NfcActionState>(NfcActionState.None)
+    val nfcAction = _nfcAction.asStateFlow()
 
     private val _ui = MutableStateFlow(UiState())
     val ui = _ui.asStateFlow()
 
+    private val pendingPrescriptionsInternal = mutableListOf<NfcData>()
     private val firestore = FirebaseFirestore.getInstance()
     private val gson = Gson()
     private val offlineNfcDao = AppDatabase.getDatabase(application).nfcPrescriptionDao()
 
     fun init(nfcAdapter: NfcAdapter?) {
-        _ui.update { it.copy(
-            supported = nfcAdapter != null,
-            enabled = nfcAdapter?.isEnabled == true
-        ) }
+        _ui.update { it.copy(supported = nfcAdapter != null, enabled = nfcAdapter?.isEnabled == true) }
     }
 
-    fun startReading() { _ui.update { it.copy(reading = true, status = "Acerque el tag…") } }
-    fun stopReading() { _ui.update { it.copy(reading = false, status = "Lectura detenida") } }
+    /**
+     * Activa el modo de lectura.
+     */
+    fun startReading() {
+        _nfcAction.value = NfcActionState.Read
+        _ui.update { it.copy(status = "Acerque el tag para leer…") }
+    }
 
+    /**
+     * Prepara la app para escribir datos en un tag.
+     */
     fun prepareToWrite(json: String) {
-        dataToWrite = json
-        pendingAction = PendingAction.WRITE
+        _nfcAction.value = NfcActionState.Write(json)
         _ui.update { it.copy(status = "Acerque el tag para escribir") }
     }
 
+    /**
+     * Prepara la app para borrar un tag.
+     */
     fun prepareToWipe() {
-        pendingAction = PendingAction.WIPE
-        _ui.update { it.copy(status = "Acerque el tag para limpiar") }
+        _nfcAction.value = NfcActionState.Wipe
+        _ui.update { it.copy(status = "¡Cuidado! Acerque el tag para borrar") }
     }
 
+    /**
+     * Cancela CUALQUIER acción NFC en curso y resetea el estado.
+     */
+    fun cancelNfcAction() {
+        if (_nfcAction.value == NfcActionState.None) return // No hacer nada si ya está cancelado
+
+        _nfcAction.value = NfcActionState.None
+        val statusText = if (pendingPrescriptionsInternal.isNotEmpty()) {
+            "${pendingPrescriptionsInternal.size} en cola."
+        } else {
+            "Seleccione una acción."
+        }
+        _ui.update { it.copy(status = statusText) }
+    }
+
+    /**
+     * Decide qué hacer basándose en el estado de _nfcAction.
+     */
     fun onTagDiscovered(tag: Tag) {
-        when (pendingAction) {
-            PendingAction.WRITE -> {
-                val json = dataToWrite ?: "{}"
-                pendingAction = PendingAction.NONE
-                dataToWrite = null
-                writeToTag(tag, json) { _, msg -> _ui.update { it.copy(status = msg) } }
+        val currentAction = _nfcAction.value
+        if (currentAction == NfcActionState.None) {
+            return
+        }
+
+        when (currentAction) {
+            is NfcActionState.Read -> {
+                readFromTag(tag)
             }
-            PendingAction.WIPE -> {
-                pendingAction = PendingAction.NONE
-                wipeTag(tag) { _, msg -> _ui.update { it.copy(status = msg) } }
-            }
-            PendingAction.NONE -> {
-                if (_ui.value.reading) {
-                    readFromTag(tag)
+            is NfcActionState.Write -> {
+                writeToTag(tag, currentAction.jsonData) { success, msg ->
+                    _ui.update { it.copy(status = msg) }
                 }
             }
+            is NfcActionState.Wipe -> {
+                wipeTag(tag) { success, msg ->
+                    _ui.update { it.copy(status = msg) }
+                }
+            }
+            is NfcActionState.None -> { /* Ya manejado arriba */ }
+        }
+        if (currentAction !is NfcActionState.Read) {
+            cancelNfcAction()
         }
     }
 
@@ -132,47 +168,142 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
                 ndef.connect()
                 val rawPayload = ndef.ndefMessage?.records?.firstOrNull()?.payload
                 ndef.close()
-
                 if (rawPayload != null) {
                     val jsonStartIndex = rawPayload.indexOfFirst { it.toInt().toChar() == '{' }
-                    if (jsonStartIndex != -1) {
-                        rawPayload.drop(jsonStartIndex).toByteArray().toString(Charsets.UTF_8)
-                    } else {
-                        null
-                    }
-                } else {
-                    null
-                }
+                    if (jsonStartIndex != -1) rawPayload.drop(jsonStartIndex).toByteArray().toString(Charsets.UTF_8) else null
+                } else null
             }.onSuccess { jsonString ->
                 val parsedObject = if (jsonString != null && jsonString != "{}") {
                     try { gson.fromJson(jsonString, NfcData::class.java) } catch (e: Exception) { null }
-                } else {
-                    null
-                }
+                } else { null }
 
-                if (parsedObject == null) {
-                    launch(Dispatchers.Main) {
+                if (parsedObject != null) {
+                    pendingPrescriptionsInternal.add(parsedObject)
+                    withContext(Dispatchers.Main) {
+                        _ui.update {
+                            it.copy(
+                                status = "Prescripción añadida (${pendingPrescriptionsInternal.size} en total).",
+                                pendingPrescriptions = pendingPrescriptionsInternal.toList()
+                            )
+                        }
+                        Toast.makeText(application, "Prescripción añadida a la cola", Toast.LENGTH_SHORT).show()
+                    }
+                } else {
+                    withContext(Dispatchers.Main) {
+                        _ui.update { it.copy(status = "El tag NFC está vacío o no es una prescripción.") }
                         Toast.makeText(application, "El tag NFC está vacío", Toast.LENGTH_LONG).show()
                     }
                 }
-
-                _ui.update {
-                    it.copy(
-                        status = if (parsedObject != null) "Prescripción Leída" else "El tag NFC está vacío",
-                        lastPayload = jsonString,
-                        parsedData = parsedObject
-                    )
-                }
-                stopReading()
-
+                withContext(Dispatchers.Main) { cancelNfcAction() }
             }.onFailure { exception ->
-                _ui.update { it.copy(status = "Error: ${exception.message}") }
-                stopReading()
+                withContext(Dispatchers.Main) {
+                    _ui.update { it.copy(status = "Error: ${exception.message}") }
+                    cancelNfcAction()
+                }
             }
         }
     }
 
-    private fun writeToTag(tag: Tag, json: String, mime: String = "application/com.example.mymeds.prescription", onDone: (Boolean, String) -> Unit) {
+    fun saveAllPendingToFirebase(currentUserId: String, onComplete: (Boolean, String) -> Unit) {
+        if (pendingPrescriptionsInternal.isEmpty()) {
+            onComplete(false, "No hay prescripciones pendientes para subir.")
+            return
+        }
+
+        val prescriptionsToProcess = ArrayList(pendingPrescriptionsInternal)
+        pendingPrescriptionsInternal.clear()
+        _ui.update { it.copy(pendingPrescriptions = emptyList()) }
+
+        if (isNetworkAvailable()) {
+            Log.d("NfcViewModel", "Red disponible. Iniciando subida múltiple a Firebase.")
+            uploadMultipleToFirebase(currentUserId, prescriptionsToProcess, onComplete)
+        } else {
+            Log.d("NfcViewModel", "Red no disponible. Guardando ${prescriptionsToProcess.size} prescripciones localmente.")
+            saveMultipleLocally(currentUserId, prescriptionsToProcess, onComplete)
+        }
+    }
+
+    private fun uploadMultipleToFirebase(currentUserId: String, prescriptions: List<NfcData>, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val totalToUpload = prescriptions.size
+            _ui.update { it.copy(isSaving = true, status = "Iniciando subida de $totalToUpload prescripciones...") }
+
+            val uploader = NfcFirebaseUploader()
+            val jobs = mutableListOf<Job>()
+            val successCount = AtomicInteger(0)
+            val errorCount = AtomicInteger(0)
+
+            prescriptions.forEach { prescription ->
+                val job = launch(Dispatchers.IO) {
+                    try {
+                        if (prescription.patientId == currentUserId) {
+                            uploader.uploadPrescription(currentUserId, prescription)
+                            successCount.incrementAndGet()
+                        } else {
+                            Log.w("NfcViewModel", "Prescripción ${prescription.id} omitida: no pertenece al usuario.")
+                            errorCount.incrementAndGet()
+                        }
+                    } catch (e: Exception) {
+                        Log.e("NfcViewModel", "Error subiendo prescripción ${prescription.id}", e)
+                        errorCount.incrementAndGet()
+                    }
+                    withContext(Dispatchers.Main) {
+                        val processedCount = successCount.get() + errorCount.get()
+                        _ui.update { it.copy(status = "Procesando... $processedCount de $totalToUpload completado(s).") }
+                    }
+                }
+                jobs.add(job)
+            }
+
+            jobs.joinAll()
+            val finalMessage = "Subida finalizada. Éxitos: ${successCount.get()}, Errores: ${errorCount.get()}."
+            _ui.update { it.copy(isSaving = false, status = finalMessage) }
+            onComplete(true, finalMessage)
+        }
+    }
+
+    private fun saveMultipleLocally(currentUserId: String, prescriptions: List<NfcData>, onComplete: (Boolean, String) -> Unit) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                _ui.update { it.copy(isSaving = true, status = "Guardando localmente...") }
+                val offlineEntities = prescriptions.map { nfcData ->
+                    NfcPrescriptionEntity(userId = currentUserId, nfcDataJson = gson.toJson(nfcData))
+                }
+                offlineNfcDao.insertAll(offlineEntities)
+                scheduleSync()
+                withContext(Dispatchers.Main) {
+                    val message = "✅ ${prescriptions.size} prescripciones guardadas localmente. Se subirán cuando haya conexión."
+                    _ui.update { it.copy(isSaving = false, status = "Guardado localmente.") }
+                    onComplete(true, message)
+                }
+            } catch (e: Exception) {
+                withContext(Dispatchers.Main) {
+                    val errorMessage = "❌ Error al guardar localmente: ${e.message}"
+                    _ui.update { it.copy(isSaving = false, status = "Error de guardado local.") }
+                    onComplete(false, errorMessage)
+                }
+            }
+        }
+    }
+
+    private fun isNetworkAvailable(): Boolean {
+        val connectivityManager = application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val network = connectivityManager.activeNetwork ?: return false
+        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
+        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    private fun scheduleSync() {
+        val constraints = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+        val syncRequest = OneTimeWorkRequestBuilder<NfcSyncWorker>()
+            .setConstraints(constraints)
+            .setBackoffCriteria(BackoffPolicy.LINEAR, WorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
+            .build()
+        WorkManager.getInstance(application).enqueueUniqueWork("nfc-sync-work", ExistingWorkPolicy.REPLACE, syncRequest)
+        Log.d("NfcViewModel", "NFC sync work scheduled.")
+    }
+
+    private fun writeToTag(tag: Tag, json: String, mime: String = "application/com.mobile.mymeds.prescription", onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val payload = json.toByteArray(Charsets.UTF_8)
@@ -191,8 +322,11 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
                     fmt.format(msg)
                     fmt.close()
                 }
-            }.onSuccess { onDone(true, "Escritura exitosa") }
-                .onFailure { onDone(false, it.message ?: "Error escribiendo") }
+            }.onSuccess {
+                withContext(Dispatchers.Main) { onDone(true, "Escritura exitosa") }
+            }.onFailure {
+                withContext(Dispatchers.Main) { onDone(false, it.message ?: "Error escribiendo") }
+            }
         }
     }
 
@@ -200,143 +334,7 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
         writeToTag(tag, "{}", onDone = onDone)
     }
 
-    /**
-     * Guardar en Firebase con estrategia de conectividad eventual
-     */
     fun saveLastReadDataToFirebase(currentUserId: String, onComplete: (Boolean, String) -> Unit) {
-        val dataToSave = _ui.value.parsedData ?: run {
-            onComplete(false, "No hay datos leídos para guardar.")
-            return
-        }
-
-        if (isNetworkAvailable()) {
-            Log.d("NfcViewModel", "Network is available. Saving directly to Firebase.")
-            saveToFirebase(currentUserId, dataToSave, onComplete)
-        } else {
-            Log.d("NfcViewModel", "Network is unavailable. Saving locally for later sync.")
-            viewModelScope.launch(Dispatchers.IO) {
-                try {
-                    val nfcDataJson = gson.toJson(dataToSave)
-                    val offlinePrescription = NfcPrescriptionEntity(
-                        userId = currentUserId,
-                        nfcDataJson = nfcDataJson
-                    )
-                    offlineNfcDao.insert(offlinePrescription)
-                    scheduleSync()
-
-                    withContext(Dispatchers.Main) {
-                        _ui.update { it.copy(isSaving = false, status = "Guardado localmente.", parsedData = null) }
-                        onComplete(true, "✅ Guardado localmente. Se sincronizará cuando haya conexión.")
-                    }
-                } catch (e: Exception) {
-                    withContext(Dispatchers.Main) {
-                        onComplete(false, "❌ Error al guardar localmente: ${e.message}")
-                    }
-                }
-            }
-        }
-    }
-
-    private fun isNetworkAvailable(): Boolean {
-        val connectivityManager = application.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        val network = connectivityManager.activeNetwork ?: return false
-        val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
-        return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-    }
-
-    private fun scheduleSync() {
-        val constraints = Constraints.Builder()
-            .setRequiredNetworkType(NetworkType.CONNECTED)
-            .build()
-
-        val syncRequest = OneTimeWorkRequestBuilder<NfcSyncWorker>()
-            .setConstraints(constraints)
-            .setBackoffCriteria(BackoffPolicy.LINEAR,
-                WorkRequest.MIN_BACKOFF_MILLIS, TimeUnit.MILLISECONDS)
-            .build()
-
-        WorkManager.getInstance(application).enqueueUniqueWork(
-            "nfc-sync-work",
-            ExistingWorkPolicy.KEEP,
-            syncRequest
-        )
-        Log.d("NfcViewModel", "NFC sync work scheduled.")
-    }
-
-    private fun saveToFirebase(currentUserId: String, dataToSave: NfcData, onComplete: (Boolean, String) -> Unit) {
-        viewModelScope.launch {
-            _ui.update { it.copy(isSaving = true, status = "Guardando en la nube...") }
-
-            if (dataToSave.patientId != currentUserId) {
-                _ui.update { it.copy(isSaving = false, status = "Verificación fallida.") }
-                onComplete(false, "Error: La prescripción no pertenece a este usuario.")
-                return@launch
-            }
-
-            try {
-                val uploader = NfcFirebaseUploader()
-                uploader.uploadPrescription(currentUserId, dataToSave)
-                _ui.update { it.copy(isSaving = false, status = "Guardado con éxito.", parsedData = null) }
-                onComplete(true, "✅ ${dataToSave.medications.size} medicamento(s) guardado(s) en una nueva prescripción.")
-            } catch (e: Exception) {
-                _ui.update { it.copy(isSaving = false, status = "Error.") }
-                onComplete(false, "❌ Error al guardar en Firebase: ${e.message}")
-            }
-        }
-    }
-
-    private fun mapNfcDataToPrescriptionHashMap(nfcData: NfcData): HashMap<String, Any> {
-        return hashMapOf(
-            "activa" to true,
-            "fileName" to nfcData.id,
-            "fromOCR" to false,
-            "notes" to "NFC",
-            "status" to "pendiente",
-            "totalItems" to nfcData.medications.size,
-            "uploadedAt" to Timestamp.now()
-        )
-    }
-
-    private suspend fun mapNfcMedsToHashMapList(
-        medications: List<NfcMedication>,
-        firestorePrescriptionId: String,
-        nfcPrescriptionId: String,
-        issuedTimestamp: String
-    ): List<HashMap<String, Any>> {
-        val globalMedsCollection = firestore.collection("medicamentosGlobales")
-
-        return medications.map { nfcMed ->
-            val querySnapshot = globalMedsCollection.whereEqualTo("nombre", nfcMed.drugName).limit(1).get().await()
-            val medDoc = querySnapshot.documents.firstOrNull()
-            val medId = medDoc?.id ?: "unknown"
-            val medRef = medDoc?.reference?.path ?: "/medicamentosGlobales/unknown"
-            val doseMg = nfcMed.dose.filter { it.isDigit() }.toIntOrNull() ?: 0
-            val frequencyHours = nfcMed.frequency.filter { it.isDigit() }.toIntOrNull() ?: 24
-
-            val startDate = try {
-                val parser = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", Locale.US)
-                parser.parse(issuedTimestamp) ?: Date()
-            } catch (e: Exception) { Date() }
-
-            val calendar = Calendar.getInstance().apply {
-                time = startDate
-                add(Calendar.DAY_OF_YEAR, nfcMed.durationInDays)
-            }
-            val endDate = calendar.time
-
-            hashMapOf(
-                "medicationId" to medId,
-                "medicationRef" to medRef,
-                "name" to nfcMed.drugName,
-                "doseMg" to doseMg,
-                "frequencyHours" to frequencyHours,
-                "startDate" to Timestamp(startDate),
-                "endDate" to Timestamp(endDate),
-                "createdAt" to Timestamp(Date()),
-                "active" to true,
-                "prescriptionId" to firestorePrescriptionId,
-                "sourceFile" to "NFC Tag (ID: $nfcPrescriptionId)"
-            )
-        }
+        onComplete(false, "Función obsoleta. Usa el nuevo flujo de 'Subir Todo'.")
     }
 }
