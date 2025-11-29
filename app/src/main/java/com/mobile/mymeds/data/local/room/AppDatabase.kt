@@ -6,6 +6,8 @@ import androidx.room.Room
 import androidx.room.RoomDatabase
 import androidx.room.TypeConverters
 import com.mobile.mymeds.data.local.room.converters.Converters
+import com.mobile.mymeds.data.local.room.dao.MedicationStockDao
+import com.mobile.mymeds.data.local.room.entitites.MedicationStockEntity
 import com.mobile.mymeds.data.local.room.dao.GlobalMedicationDao
 import com.mobile.mymeds.data.local.room.dao.MedicationDao
 import com.mobile.mymeds.data.local.room.dao.NfcPrescriptionDao
@@ -21,12 +23,13 @@ import com.mobile.mymeds.models.UserInteraction
  */
 @Database(
     entities = [
-        GlobalMedication::class, // GlobalMedication cache
+        GlobalMedication::class,
         MedicationEntity::class,
         NfcPrescriptionEntity::class,
-        UserInteraction::class
+        UserInteraction::class,
+        MedicationStockEntity::class
     ],
-    version = 3,
+    version = 7,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -35,25 +38,31 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun globalMedicationDao(): GlobalMedicationDao
     abstract fun medicationDao(): MedicationDao
     abstract fun nfcPrescriptionDao(): NfcPrescriptionDao
-
     abstract fun userInteractionDao(): UserInteractionDao
 
+    abstract fun medicationStockDao(): MedicationStockDao
+
     companion object {
-        // @Volatile para que la instancia esté al día
         @Volatile
         private var INSTANCE: AppDatabase? = null
 
         fun getDatabase(context: Context): AppDatabase {
+            val appContext = context.applicationContext
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
+                val instance = INSTANCE
+                if (instance != null) {
+                    return instance
+                }
+
+                val newInstance = Room.databaseBuilder(
+                    appContext,
                     AppDatabase::class.java,
                     "mymeds-application"
                 )
                     .fallbackToDestructiveMigration()
                     .build()
-                INSTANCE = instance
-                instance
+                INSTANCE = newInstance
+                newInstance
             }
         }
     }

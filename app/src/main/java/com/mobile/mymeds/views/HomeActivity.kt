@@ -33,7 +33,9 @@ import com.mobile.mymeds.views.components.DrivingModeOverlay
 import com.google.firebase.auth.FirebaseAuth
 import androidx.compose.material.icons.filled.AccessTime
 import androidx.core.content.ContextCompat
-
+import com.mobile.mymeds.utils.NotificationHelper
+import com.mobile.mymeds.utils.WorkScheduler
+import com.mobile.mymeds.workers.NfcSyncWorker
 
 class HomeActivity : ComponentActivity() {
     private val mainViewModel: MainViewModel by viewModels()
@@ -51,7 +53,9 @@ class HomeActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         askNotificationPermission()
-        mainViewModel.startDrivingDetection(applicationContext)
+        NotificationHelper.createNotificationChannel(this)
+        WorkScheduler.scheduleStockCheck(applicationContext)
+
 
         // Detecta si se está conduciendo
         mainViewModel.startDrivingDetection(applicationContext)
