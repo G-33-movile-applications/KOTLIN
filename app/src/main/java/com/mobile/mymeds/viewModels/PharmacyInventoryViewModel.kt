@@ -1,13 +1,19 @@
 package com.mobile.mymeds.viewModels
 
+import android.app.Application
 import android.util.Log
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
-import androidx.lifecycle.ViewModel
-import com.mobile.mymeds.models.InventoryMedication
+import androidx.lifecycle.viewModelScope
 import com.google.firebase.firestore.FirebaseFirestore
+import com.mobile.mymeds.data.local.room.AppDatabase
+import com.mobile.mymeds.models.InventoryMedication
+import com.mobile.mymeds.repository.StockCacheRepository
+import kotlinx.coroutines.launch
 
-class PharmacyInventoryViewModel : ViewModel() {
+class PharmacyInventoryViewModel(application: Application) : AndroidViewModel(application) {
+
 
     private val db = FirebaseFirestore.getInstance()
 
@@ -19,6 +25,28 @@ class PharmacyInventoryViewModel : ViewModel() {
 
     private val _errorMessage = MutableLiveData<String?>()
     val errorMessage: LiveData<String?> = _errorMessage
+
+    private val stockCacheRepository: StockCacheRepository
+    init {
+        val stockCacheDao = AppDatabase.getDatabase(application).medicationStockDao()
+        stockCacheRepository = StockCacheRepository(stockCacheDao)
+    }
+
+    fun followOutOfStockItem(
+        inventoryId: String,
+        medicationName: String,
+        pharmacyId: String,
+        pharmacyName: String
+    ) {
+        viewModelScope.launch {
+            stockCacheRepository.followItem(
+                inventoryId = inventoryId,
+                medicationName = medicationName,
+                pharmacyId = pharmacyId,
+                pharmacyName = pharmacyName
+            )
+        }
+    }
 
     fun loadPharmacyInventory(pharmacyId: String) {
         _isLoading.value = true

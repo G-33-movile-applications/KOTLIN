@@ -24,6 +24,8 @@ object PreferencesKeys {
     val LAST_SYNC_TIMESTAMP = longPreferencesKey("last_sync_timestamp")
     val NOTIFICATIONS_ENABLED = booleanPreferencesKey("notifications_enabled")
     val AUTO_REORDER_ENABLED = booleanPreferencesKey("auto_reorder_enabled")
+
+    val SMART_AUTOFILL_ENABLED = booleanPreferencesKey("smart_autofill_enabled")
 }
 
 /**
@@ -96,6 +98,15 @@ class UserPreferencesManager(private val context: Context) {
             preferences[PreferencesKeys.AUTO_REORDER_ENABLED] ?: false
         }
 
+    /**
+     * Smart Autofill habilitado
+     */
+    val smartAutofillEnabled: Flow<Boolean> = dataStore.data
+        .map { preferences ->
+            // Por defecto la feature esta activa
+            preferences[PreferencesKeys.SMART_AUTOFILL_ENABLED] ?: true
+        }
+
     // ═══════════════════════════════════════════════════════════════
     // ESCRITURA DE PREFERENCIAS
     // ═══════════════════════════════════════════════════════════════
@@ -158,6 +169,16 @@ class UserPreferencesManager(private val context: Context) {
             preferences[PreferencesKeys.AUTO_REORDER_ENABLED] = enabled
         }
         Log.d(TAG, "💾 [DataStore] Auto-reorden: $enabled")
+    }
+
+    /**
+     * Habilita/deshabilita Smart Autofill
+     */
+    suspend fun setSmartAutofillEnabled(enabled: Boolean) {
+        dataStore.edit { preferences ->
+            preferences[PreferencesKeys.SMART_AUTOFILL_ENABLED] = enabled
+        }
+        Log.d(TAG, "💾 [DataStore] Smart Autofill: $enabled")
     }
 
     /**
