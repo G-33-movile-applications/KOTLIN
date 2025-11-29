@@ -29,7 +29,7 @@ import com.mobile.mymeds.models.UserInteraction
         UserInteraction::class,
         MedicationStockEntity::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = false
 )
 @TypeConverters(Converters::class)

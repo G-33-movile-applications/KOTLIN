@@ -30,6 +30,8 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+// Importamos las clases que movimos al ViewModel
+import com.mobile.mymeds.viewModels.NfcActionState
 import com.mobile.mymeds.viewModels.NfcViewModel
 import com.mobile.mymeds.views.components.PrescriptionComponents.HeaderStatusCard
 import com.mobile.mymeds.views.components.PrescriptionComponents.LargeActionCard
@@ -53,7 +55,7 @@ class UploadByNfcActivity : ComponentActivity() {
                     UploadByNfcScreen(
                         vm = vm,
                         onRead = { vm.startReading() },
-                        onStopRead = { vm.stopReading() },
+                        onStopRead = { vm.cancelNfcAction() },
                         onWipe = { vm.prepareToWipe() },
                         onWrite = { navController.navigate("nfc_builder_screen") },
                         onSaveAll = {
@@ -123,6 +125,7 @@ fun UploadByNfcScreen(
     onWipe: () -> Unit, onSaveAll: () -> Unit, onBack: () -> Unit
 ) {
     val ui by vm.ui.collectAsState()
+    val currentNfcAction by vm.nfcAction.collectAsState()
 
     Scaffold(
         topBar = {
@@ -142,8 +145,11 @@ fun UploadByNfcScreen(
         ) {
             item {
                 HeaderStatusCard(
-                    supported = ui.supported, enabled = ui.enabled, reading = ui.reading,
-                    status = ui.status, lastReadData = null
+                    supported = ui.supported,
+                    enabled = ui.enabled,
+                    reading = currentNfcAction is NfcActionState.Read,
+                    status = ui.status,
+                    lastReadData = null
                 )
             }
             if (ui.isSaving) {
@@ -282,7 +288,6 @@ private fun DetailItem(icon: androidx.compose.ui.graphics.vector.ImageVector, te
     }
 }
 
-
 private fun buildPrescriptionJson(medJsonStrings: List<String>): String {
     val currentUserId = FirebaseAuth.getInstance().currentUser?.uid ?: "default_user_id_error"
     val sdf = java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss'Z'", java.util.Locale.US)
@@ -290,4 +295,3 @@ private fun buildPrescriptionJson(medJsonStrings: List<String>): String {
     val medsArrayString = medJsonStrings.joinToString(separator = ",")
     return """{"rxId":"RX-${System.currentTimeMillis()}","patient":"$currentUserId","meds":[$medsArrayString],"issuedAt":"$currentTime","signed":true}"""
 }
-

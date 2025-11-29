@@ -1,6 +1,8 @@
 package com.mobile.mymeds
 
 import android.app.Application
+import android.util.Log
+import com.google.firebase.firestore.FirebaseFirestore
 import com.mobile.mymeds.data.local.room.AppDatabase
 import com.mobile.mymeds.repository.GlobalMedicationRepository
 import com.google.firebase.firestore.ktx.firestore
@@ -12,6 +14,11 @@ class MyMedsApplication : Application() {
     private val firestore by lazy { Firebase.firestore }
 
     val globalMedicationRepository by lazy {
-        GlobalMedicationRepository(firestore, database.globalMedicationDao(), this)
+        Log.d("MY_MEDS_DEBUG", ">>>> Creando GlobalMedicationRepository AHORA <<<<")
+        GlobalMedicationRepository(
+            FirebaseFirestore.getInstance(),
+            database.globalMedicationDao(),
+            this
+        )
     }
 }

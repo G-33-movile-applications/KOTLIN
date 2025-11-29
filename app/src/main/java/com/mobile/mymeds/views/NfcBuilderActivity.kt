@@ -36,14 +36,18 @@ fun NfcBuilderActivity(
 ) {
     val application = LocalContext.current.applicationContext as MyMedsApplication
     val viewModel: NfcBuilderViewModel = viewModel(
-        factory = NfcBuilderViewModelFactory(application)
+        factory = NfcBuilderViewModelFactory(application.globalMedicationRepository, application)
     )
     val uiState by viewModel.uiState.collectAsState()
 
     val selectedMeds = remember { mutableStateListOf<EditableMedication>() }
 
     // Extrae la dosis del nombre del med
-    fun getDoseFromString(name: String): String {
+    fun getDoseFromString(name: String?): String {
+        // Si el nombre es nulo o está vacío, devuelve "0" inmediatamente.
+        if (name.isNullOrEmpty()) {
+            return "0"
+        }
         val dosePart = name.split(" ").find { it.isNotEmpty() && it.first().isDigit() }
         return dosePart?.filter { it.isDigit() } ?: "0"
     }
@@ -64,7 +68,8 @@ fun NfcBuilderActivity(
                 onClick = {
                     if (selectedMeds.isNotEmpty()) {
                         val medJsonStrings = selectedMeds.map { editableMed ->
-                            """{"drug":"${editableMed.medication.nombre}","dose":"${getDoseFromString(editableMed.medication.nombre)}","freq":"${editableMed.frequency}h","days":${editableMed.days}}"""
+                            val dose = getDoseFromString(editableMed.medication.nombre)
+                            """{"drug":"${editableMed.medication.nombre}","dose":"$dose","freq":"${editableMed.frequency}h","days":${editableMed.days}}"""
                         }
                         onBuildPrescription(medJsonStrings)
                     }
@@ -176,8 +181,8 @@ private fun SelectableMedicationItem(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(medication.nombre, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text(medication.laboratorio, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(medication.nombre ?: "Sin nombre", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                    Text(medication.laboratorio ?: "Sin laboratorio", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Spacer(modifier = Modifier.width(16.dp))
                 Checkbox(checked = isSelected, onCheckedChange = { onToggle() })

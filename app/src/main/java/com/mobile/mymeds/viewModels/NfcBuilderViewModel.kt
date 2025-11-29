@@ -1,6 +1,7 @@
 package com.mobile.mymeds.viewModels
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
@@ -31,20 +32,17 @@ class NfcBuilderViewModel(
     val uiState = _uiState.asStateFlow()
 
     init {
-        // ✅ TODA LA LÓGICA AQUÍ, EN UNA SOLA CORUTINA PARA EVITAR ERRORES
+        Log.d("MY_MEDS_DEBUG", "NfcBuilderViewModel: init() INICIADO.")
         viewModelScope.launch {
-            // 1. PRIMERO, le pedimos al repositorio que se actualice desde la red.
-            // La función 'refreshMedications' es 'suspend', por lo que esta corutina
-            // esperará aquí hasta que la descarga de Firestore termine (o falle).
+            Log.d("MY_MEDS_DEBUG", "ViewModel: Dentro de la corutina, a punto de llamar a refreshMedications.")
             repository.refreshMedications()
+            Log.d("MY_MEDS_DEBUG", "ViewModel: La llamada a refreshMedications() ha terminado.")
 
-            // 2. UNA VEZ que la descarga ha terminado y la caché está (o no) actualizada,
-            // empezamos a escuchar los cambios en la caché para siempre.
             repository.allMedications.collect { cachedMeds ->
-                // 3. Cada vez que la caché se actualice, actualizamos la UI.
+                Log.d("MY_MEDS_DEBUG", "ViewModel: collect() ha recibido ${cachedMeds.size} medicamentos.")
                 _uiState.update {
                     it.copy(
-                        isLoading = false, // La carga inicial definitivamente ya terminó.
+                        isLoading = false,
                         availableMedications = cachedMeds,
                         showOfflineAndNoCacheError = cachedMeds.isEmpty() && !ConnectivityUtils.isNetworkAvailable(context)
                     )
@@ -54,21 +52,15 @@ class NfcBuilderViewModel(
     }
 }
 
-// Tu ViewModelFactory ya es correcta y no necesita cambios.
 class NfcBuilderViewModelFactory(
+    private val repository: GlobalMedicationRepository,
     private val application: Application
 ) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
-        if (modelClass.isAssignableFrom(NfcBuilderViewModel::class.java)) {
-            val db = AppDatabase.getDatabase(application)
-            val repository = GlobalMedicationRepository(
-                FirebaseFirestore.getInstance(),
-                db.globalMedicationDao(),
-                application
-            )
-            @Suppress("UNCHECKED_CAST")
-            return NfcBuilderViewModel(repository, application) as T
-        }
-        throw IllegalArgumentException("Unknown ViewModel class")
+    if (modelClass.isAssignableFrom(NfcBuilderViewModel::class.java)) {
+        @Suppress("UNCHECKED_CAST")
+        return NfcBuilderViewModel(repository, application) as T
     }
+    throw IllegalArgumentException("Unknown ViewModel class")
+}
 }

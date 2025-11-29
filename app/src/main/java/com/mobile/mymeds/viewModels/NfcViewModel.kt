@@ -25,7 +25,6 @@ import com.mobile.mymeds.data.local.room.AppDatabase
 import com.mobile.mymeds.data.local.room.entitites.NfcPrescriptionEntity
 import com.mobile.mymeds.workers.NfcFirebaseUploader
 import com.mobile.mymeds.workers.NfcSyncWorker
-import com.google.firebase.Timestamp
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.gson.Gson
 import com.google.gson.annotations.SerializedName
@@ -37,23 +36,26 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
-import java.util.Locale
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * Representa la acción NFC exclusiva que el usuario quiere realizar.
+ */
+sealed class NfcActionState {
+    object None : NfcActionState()
+    object Read : NfcActionState()
+    data class Write(val jsonData: String) : NfcActionState()
+    object Wipe : NfcActionState()
+}
 
 data class UiState(
     val supported: Boolean = false,
     val enabled: Boolean = false,
-    val reading: Boolean = false,
-    val status: String = "",
+    val status: String = "Seleccione una acción", // Campo de texto único para el estado
     val isSaving: Boolean = false,
     val pendingPrescriptions: List<NfcViewModel.NfcData> = emptyList()
 )
-
-private enum class PendingAction { NONE, WRITE, WIPE }
 
 private val Ndef.isWriteProtected: Boolean
     get() = this.canMakeReadOnly() && !this.isWritable
@@ -75,13 +77,13 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
         @SerializedName("days") val durationInDays: Int
     )
 
-    private var pendingAction = PendingAction.NONE
-    private var dataToWrite: String? = null
-    private val pendingPrescriptionsInternal = mutableListOf<NfcData>()
+    private val _nfcAction = MutableStateFlow<NfcActionState>(NfcActionState.None)
+    val nfcAction = _nfcAction.asStateFlow()
 
     private val _ui = MutableStateFlow(UiState())
     val ui = _ui.asStateFlow()
 
+    private val pendingPrescriptionsInternal = mutableListOf<NfcData>()
     private val firestore = FirebaseFirestore.getInstance()
     private val gson = Gson()
     private val offlineNfcDao = AppDatabase.getDatabase(application).nfcPrescriptionDao()
@@ -90,48 +92,72 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
         _ui.update { it.copy(supported = nfcAdapter != null, enabled = nfcAdapter?.isEnabled == true) }
     }
 
+    /**
+     * Activa el modo de lectura.
+     */
     fun startReading() {
-        pendingAction = PendingAction.NONE
-        dataToWrite = null
-        _ui.update { it.copy(reading = true, status = "Acerque el tag…") }
+        _nfcAction.value = NfcActionState.Read
+        _ui.update { it.copy(status = "Acerque el tag para leer…") }
     }
 
-    fun stopReading() {
-        pendingAction = PendingAction.NONE
-        dataToWrite = null
-        _ui.update { it.copy(
-            reading = false,
-            status = if (pendingPrescriptionsInternal.isNotEmpty()) "${pendingPrescriptionsInternal.size} en cola." else "Seleccione una acción."
-        ) }
-    }
-
+    /**
+     * Prepara la app para escribir datos en un tag.
+     */
     fun prepareToWrite(json: String) {
-        dataToWrite = json
-        pendingAction = PendingAction.WRITE
-        _ui.update { it.copy(reading = false, status = "Acerque el tag para escribir") }
+        _nfcAction.value = NfcActionState.Write(json)
+        _ui.update { it.copy(status = "Acerque el tag para escribir") }
     }
 
+    /**
+     * Prepara la app para borrar un tag.
+     */
     fun prepareToWipe() {
-        pendingAction = PendingAction.WIPE
-        dataToWrite = null
-        _ui.update { it.copy(reading = false, status = "Acerque el tag para limpiar") }
+        _nfcAction.value = NfcActionState.Wipe
+        _ui.update { it.copy(status = "¡Cuidado! Acerque el tag para borrar") }
     }
 
+    /**
+     * Cancela CUALQUIER acción NFC en curso y resetea el estado.
+     */
+    fun cancelNfcAction() {
+        if (_nfcAction.value == NfcActionState.None) return // No hacer nada si ya está cancelado
+
+        _nfcAction.value = NfcActionState.None
+        val statusText = if (pendingPrescriptionsInternal.isNotEmpty()) {
+            "${pendingPrescriptionsInternal.size} en cola."
+        } else {
+            "Seleccione una acción."
+        }
+        _ui.update { it.copy(status = statusText) }
+    }
+
+    /**
+     * Decide qué hacer basándose en el estado de _nfcAction.
+     */
     fun onTagDiscovered(tag: Tag) {
-        when (pendingAction) {
-            PendingAction.WRITE -> {
-                val json = dataToWrite ?: "{}"
-                pendingAction = PendingAction.NONE
-                dataToWrite = null
-                writeToTag(tag, json) { _, msg -> _ui.update { it.copy(status = msg) } }
+        val currentAction = _nfcAction.value
+        if (currentAction == NfcActionState.None) {
+            return
+        }
+
+        when (currentAction) {
+            is NfcActionState.Read -> {
+                readFromTag(tag)
             }
-            PendingAction.WIPE -> {
-                pendingAction = PendingAction.NONE
-                wipeTag(tag) { _, msg -> _ui.update { it.copy(status = msg) } }
+            is NfcActionState.Write -> {
+                writeToTag(tag, currentAction.jsonData) { success, msg ->
+                    _ui.update { it.copy(status = msg) }
+                }
             }
-            PendingAction.NONE -> {
-                if (_ui.value.reading) readFromTag(tag)
+            is NfcActionState.Wipe -> {
+                wipeTag(tag) { success, msg ->
+                    _ui.update { it.copy(status = msg) }
+                }
             }
+            is NfcActionState.None -> { /* Ya manejado arriba */ }
+        }
+        if (currentAction !is NfcActionState.Read) {
+            cancelNfcAction()
         }
     }
 
@@ -153,21 +179,27 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
 
                 if (parsedObject != null) {
                     pendingPrescriptionsInternal.add(parsedObject)
-                    _ui.update {
-                        it.copy(
-                            status = "Prescripción añadida (${pendingPrescriptionsInternal.size} en total).",
-                            pendingPrescriptions = pendingPrescriptionsInternal.toList()
-                        )
+                    withContext(Dispatchers.Main) {
+                        _ui.update {
+                            it.copy(
+                                status = "Prescripción añadida (${pendingPrescriptionsInternal.size} en total).",
+                                pendingPrescriptions = pendingPrescriptionsInternal.toList()
+                            )
+                        }
+                        Toast.makeText(application, "Prescripción añadida a la cola", Toast.LENGTH_SHORT).show()
                     }
-                    launch(Dispatchers.Main) { Toast.makeText(application, "Prescripción añadida a la cola", Toast.LENGTH_SHORT).show() }
                 } else {
-                    _ui.update { it.copy(status = "El tag NFC está vacío o no es una prescripción.") }
-                    launch(Dispatchers.Main) { Toast.makeText(application, "El tag NFC está vacío", Toast.LENGTH_LONG).show() }
+                    withContext(Dispatchers.Main) {
+                        _ui.update { it.copy(status = "El tag NFC está vacío o no es una prescripción.") }
+                        Toast.makeText(application, "El tag NFC está vacío", Toast.LENGTH_LONG).show()
+                    }
                 }
-                stopReading()
+                withContext(Dispatchers.Main) { cancelNfcAction() }
             }.onFailure { exception ->
-                _ui.update { it.copy(status = "Error: ${exception.message}") }
-                stopReading()
+                withContext(Dispatchers.Main) {
+                    _ui.update { it.copy(status = "Error: ${exception.message}") }
+                    cancelNfcAction()
+                }
             }
         }
     }
@@ -271,11 +303,7 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
         Log.d("NfcViewModel", "NFC sync work scheduled.")
     }
 
-    fun saveLastReadDataToFirebase(currentUserId: String, onComplete: (Boolean, String) -> Unit) {
-        onComplete(false, "Función obsoleta. Usa el nuevo flujo de 'Subir Todo'.")
-    }
-
-    private fun writeToTag(tag: Tag, json: String, mime: String = "application/com.example.mymeds.prescription", onDone: (Boolean, String) -> Unit) {
+    private fun writeToTag(tag: Tag, json: String, mime: String = "application/com.mobile.mymeds.prescription", onDone: (Boolean, String) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 val payload = json.toByteArray(Charsets.UTF_8)
@@ -294,12 +322,19 @@ class NfcViewModel(private val application: Application) : AndroidViewModel(appl
                     fmt.format(msg)
                     fmt.close()
                 }
-            }.onSuccess { onDone(true, "Escritura exitosa") }
-                .onFailure { onDone(false, it.message ?: "Error escribiendo") }
+            }.onSuccess {
+                withContext(Dispatchers.Main) { onDone(true, "Escritura exitosa") }
+            }.onFailure {
+                withContext(Dispatchers.Main) { onDone(false, it.message ?: "Error escribiendo") }
+            }
         }
     }
 
     private fun wipeTag(tag: Tag, onDone: (Boolean, String) -> Unit) {
         writeToTag(tag, "{}", onDone = onDone)
+    }
+
+    fun saveLastReadDataToFirebase(currentUserId: String, onComplete: (Boolean, String) -> Unit) {
+        onComplete(false, "Función obsoleta. Usa el nuevo flujo de 'Subir Todo'.")
     }
 }
