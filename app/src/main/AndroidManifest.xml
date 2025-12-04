@@ -122,6 +122,11 @@
             android:exported="false"
             android:theme="@style/Theme.MyMeds" />
 
+        <activity
+            android:name="com.mobile.mymeds.views.InvoicesActivity"
+            android:exported="false"
+            android:theme="@style/Theme.MyMeds"
+
         <!-- ═══════════════════════════════════════════════════════════════ -->
         <!-- ACTIVITIES DE FARMACIA -->
         <!-- ═══════════════════════════════════════════════════════════════ -->
